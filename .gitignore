@@ -1,0 +1,11 @@
+.idea/
+.DS_Store
+matchers/__pycache__/
+.build/
+
+project/
+headers/
+
+exclude_id.txt
+data.json
+
