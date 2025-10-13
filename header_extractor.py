@@ -395,8 +395,7 @@ class HeaderScanner:
     def __init__(self, project_path: Path, exclude_dirs: List[str] = None):
         self.project_path = Path(project_path)
         self.exclude_dirs = exclude_dirs or [
-            'Pods', 'Carthage', '.build', 'build',
-            'DerivedData', '.git', 'node_modules',
+            '.build', 'build', 'DerivedData', '.git', 'node_modules',
         ]
         self.header_results = {}
         self.stats = defaultdict(int)
@@ -554,7 +553,7 @@ def main():
 
     exclude_dirs = None
     if args.exclude:
-        default_exclude = ['Pods', 'Carthage', '.build', 'build', 'DerivedData', '.git', 'node_modules']
+        default_exclude = ['.build', 'build', 'DerivedData', '.git', 'node_modules']
         exclude_dirs = default_exclude + args.exclude
 
     print("🚀 Objective-C 헤더 식별자 추출기")

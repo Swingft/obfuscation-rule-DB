@@ -5,7 +5,10 @@ matchers/__pycache__/
 
 project/
 headers/
+resource/
 
 exclude_id.txt
 data.json
+resources.txt
+
 
