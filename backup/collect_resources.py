@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-리소스 파일 수집기
+리소스 파일 수집기 v2
 
-프로젝트에서 XIB, Storyboard, Plist, CoreData 등의 리소스 파일을 찾아
+프로젝트에서 XIB, Storyboard, Plist, CoreData, Strings, Entitlements, Assets 파일을 찾아
 ./resource 디렉토리에 타입별로 분류하여 복사합니다.
 """
 
 import shutil
 import json
 import argparse
+import plistlib
 from pathlib import Path
 from typing import List, Dict, Set, Optional
 from collections import defaultdict
@@ -16,9 +17,17 @@ import xml.etree.ElementTree as ET
 import re
 
 
-# 기존 파서 클래스들 (resource_identifier_extractor.py에서 가져옴)
 class XIBStoryboardParser:
     """XIB/Storyboard 파일에서 식별자 추출"""
+
+    SYSTEM_CLASSES = {
+        'UIResponder', 'UIViewController', 'UIView', 'UITableView',
+        'UICollectionView', 'UIButton', 'UILabel', 'UIImageView',
+        'UITableViewCell', 'UICollectionViewCell', 'UIScrollView',
+        'UIStackView', 'UINavigationController', 'UITabBarController',
+        'NSObject', 'NSManagedObject', 'UITextField', 'UITextView',
+        'UISwitch', 'UISlider', 'UISegmentedControl', 'UIDatePicker',
+    }
 
     @classmethod
     def parse(cls, file_path: Path) -> Dict[str, Set[str]]:
@@ -31,7 +40,8 @@ class XIBStoryboardParser:
             for elem in root.iter():
                 custom_class = elem.get('customClass')
                 if custom_class and cls._is_valid_identifier(custom_class):
-                    result['classes'].add(custom_class)
+                    if custom_class not in cls.SYSTEM_CLASSES:
+                        result['classes'].add(custom_class)
 
                 custom_module = elem.get('customModule')
                 if custom_module and cls._is_valid_identifier(custom_module):
@@ -42,7 +52,8 @@ class XIBStoryboardParser:
                 property_name = connection.get('property')
 
                 if kind == 'outlet' and property_name:
-                    result['outlets'].add(property_name)
+                    if cls._is_valid_identifier(property_name):
+                        result['outlets'].add(property_name)
                 elif kind == 'action':
                     selector = connection.get('selector')
                     if selector:
@@ -74,7 +85,7 @@ class XIBStoryboardParser:
                         if cls._is_valid_identifier(part):
                             result['runtime_attributes'].add(part)
 
-        except Exception as e:
+        except Exception:
             pass
 
         return dict(result)
@@ -83,33 +94,82 @@ class XIBStoryboardParser:
     def _is_valid_identifier(name: str) -> bool:
         if not name or len(name) <= 1:
             return False
-        return bool(re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name))
+
+        if not (name[0].isalpha() or name[0] == '_'):
+            return False
+
+        for char in name:
+            if not (char.isalnum() or char == '_'):
+                return False
+
+        return True
 
 
 class PlistParser:
-    """Plist 파일에서 식별자 추출"""
+    """Plist 파일에서 식별자 추출 (바이너리/XML 자동 처리)"""
 
     @classmethod
     def parse(cls, file_path: Path) -> Dict[str, Set[str]]:
         result = defaultdict(set)
 
+        # 1단계: plistlib으로 바이너리/XML 자동 감지
+        try:
+            with open(file_path, 'rb') as f:
+                plist_data = plistlib.load(f)
+
+            if isinstance(plist_data, dict):
+                cls._parse_dict_native(plist_data, result, [])
+                return dict(result)
+        except Exception:
+            pass
+
+        # 2단계: XML 파싱 시도
         try:
             tree = ET.parse(file_path)
             root = tree.getroot()
-
             main_dict = root.find('dict')
-            if main_dict is None:
-                return dict(result)
-
-            cls._parse_dict(main_dict, result, [])
-
-        except Exception as e:
+            if main_dict is not None:
+                cls._parse_dict_xml(main_dict, result, [])
+        except Exception:
             pass
 
         return dict(result)
 
     @classmethod
-    def _parse_dict(cls, dict_elem, result: defaultdict, key_path: List[str]):
+    def _parse_dict_native(cls, data: dict, result: defaultdict, key_path: List[str]):
+        """Python dict로 파싱"""
+        for key, value in data.items():
+            if key == 'CFBundleURLSchemes' and isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str):
+                        result['url_schemes'].add(item)
+
+            elif key == 'CFBundleTypeName' and isinstance(value, str):
+                result['document_types'].add(value)
+
+            elif key == 'UTTypeIdentifier' and isinstance(value, str):
+                result['uti_identifiers'].add(value)
+
+            elif key == 'NSUserActivityTypes' and isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str):
+                        result['user_activity_types'].add(item)
+
+            elif key == 'BGTaskSchedulerPermittedIdentifiers' and isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str):
+                        result['background_task_ids'].add(item)
+
+            elif isinstance(value, dict):
+                cls._parse_dict_native(value, result, key_path + [key])
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        cls._parse_dict_native(item, result, key_path + [key])
+
+    @classmethod
+    def _parse_dict_xml(cls, dict_elem, result: defaultdict, key_path: List[str]):
+        """XML로 파싱"""
         children = list(dict_elem)
         i = 0
 
@@ -137,22 +197,23 @@ class PlistParser:
                             if string_elem.text:
                                 result['user_activity_types'].add(string_elem.text)
 
+                    elif key == 'BGTaskSchedulerPermittedIdentifiers' and value_elem.tag == 'array':
+                        for string_elem in value_elem.findall('string'):
+                            if string_elem.text:
+                                result['background_task_ids'].add(string_elem.text)
+
                     elif value_elem.tag == 'dict':
-                        cls._parse_dict(value_elem, result, key_path + [key])
+                        cls._parse_dict_xml(value_elem, result, key_path + [key])
                     elif value_elem.tag == 'array':
-                        cls._parse_array(value_elem, result, key_path + [key])
+                        for child in value_elem:
+                            if child.tag == 'dict':
+                                cls._parse_dict_xml(child, result, key_path)
 
                     i += 2
                 else:
                     i += 1
             else:
                 i += 1
-
-    @classmethod
-    def _parse_array(cls, array_elem, result: defaultdict, key_path: List[str]):
-        for child in array_elem:
-            if child.tag == 'dict':
-                cls._parse_dict(child, result, key_path)
 
 
 class CoreDataParser:
@@ -198,7 +259,7 @@ class CoreDataParser:
                 if name:
                     result['fetch_requests'].add(name)
 
-        except Exception as e:
+        except Exception:
             pass
 
 
@@ -215,13 +276,29 @@ class StringsFileParser:
 
             for match in pattern.finditer(content):
                 key = match.group(1)
-                if key:
+                if key and cls._is_valid_key(key):
                     keys.add(key)
 
-        except Exception as e:
+        except Exception:
             pass
 
         return keys
+
+    @staticmethod
+    def _is_valid_key(key: str) -> bool:
+        """유효한 localization key인지 검사"""
+        if not key or len(key) < 2:
+            return False
+
+        # 숫자나 특수문자로 시작하는 키 제외
+        if key[0].isdigit() or not (key[0].isalnum() or key[0] in ('_', '-')):
+            return False
+
+        # 5단어 이상 문장 제외
+        if ' ' in key and len(key.split()) > 5:
+            return False
+
+        return True
 
 
 class EntitlementsParser:
@@ -258,13 +335,46 @@ class EntitlementsParser:
                                 if string_elem.text:
                                     result['keychain_groups'].add(string_elem.text)
 
+                        elif key == 'com.apple.developer.icloud-container-identifiers' and value_elem.tag == 'array':
+                            for string_elem in value_elem.findall('string'):
+                                if string_elem.text:
+                                    result['icloud_containers'].add(string_elem.text)
+
                         i += 2
                     else:
                         i += 1
                 else:
                     i += 1
 
-        except Exception as e:
+        except Exception:
+            pass
+
+        return dict(result)
+
+
+class AssetsParser:
+    """Assets.xcassets에서 이미지/색상 이름 추출"""
+
+    @classmethod
+    def parse(cls, assets_path: Path) -> Dict[str, Set[str]]:
+        result = defaultdict(set)
+
+        if not assets_path.is_dir():
+            return dict(result)
+
+        try:
+            for item in assets_path.rglob('*'):
+                if item.is_dir():
+                    if item.suffix == '.imageset':
+                        result['images'].add(item.stem)
+                    elif item.suffix == '.colorset':
+                        result['colors'].add(item.stem)
+                    elif item.suffix == '.dataset':
+                        result['data_assets'].add(item.stem)
+                    elif item.suffix == '.symbolset':
+                        result['symbols'].add(item.stem)
+
+        except Exception:
             pass
 
         return dict(result)
@@ -273,7 +383,6 @@ class EntitlementsParser:
 class ResourceCollector:
     """리소스 파일 수집기"""
 
-    # 지원하는 리소스 타입 (난독화 제외 식별자 추출 대상)
     RESOURCE_TYPES = {
         'plist': {
             'extensions': ['.plist'],
@@ -306,6 +415,12 @@ class ResourceCollector:
             'subdirectory': 'entitlements',
             'parser': EntitlementsParser
         },
+        'assets': {
+            'extensions': ['.xcassets'],
+            'subdirectory': 'assets',
+            'parser': AssetsParser,
+            'is_directory': True
+        },
     }
 
     def __init__(self, project_path: Path, output_dir: Path = Path('./resource'),
@@ -313,46 +428,32 @@ class ResourceCollector:
                  exclude_dirs: Optional[List[str]] = None,
                  preserve_structure: bool = False,
                  extract_identifiers: bool = False):
-        """
-        Args:
-            project_path: 프로젝트 루트 경로
-            output_dir: 리소스 파일을 저장할 디렉토리 (기본: ./resource)
-            resource_types: 수집할 리소스 타입 목록 (None이면 전체)
-            exclude_dirs: 제외할 디렉토리 목록
-            preserve_structure: True면 폴더 구조 유지, False면 평탄화
-            extract_identifiers: True면 식별자 추출
-        """
         self.project_path = Path(project_path).resolve()
         self.output_dir = Path(output_dir).resolve()
         self.preserve_structure = preserve_structure
         self.extract_identifiers = extract_identifiers
 
-        # 수집할 타입 (None이면 전체)
         if resource_types is None:
             self.active_types = set(self.RESOURCE_TYPES.keys())
         else:
             self.active_types = set(resource_types)
-            # 유효하지 않은 타입 체크
             invalid = self.active_types - set(self.RESOURCE_TYPES.keys())
             if invalid:
                 print(f"⚠️  알 수 없는 타입: {', '.join(invalid)}")
                 print(f"   지원 타입: {', '.join(self.RESOURCE_TYPES.keys())}")
 
         self.exclude_dirs = exclude_dirs or [
-            '.build', 'build', 'DerivedData', '.git', 'node_modules',
+            '.build', 'build', 'DerivedData', '.git', 'node_modules', 'Pods', 'Carthage'
         ]
 
         self.stats = defaultdict(lambda: {'found': 0, 'copied': 0, 'failed': 0})
         self.filename_counter = defaultdict(lambda: defaultdict(int))
-
-        # 식별자 추출 결과
         self.identifiers = defaultdict(lambda: defaultdict(set))
 
     def should_skip_directory(self, dir_path: Path) -> bool:
-        """디렉토리 스킵 여부"""
         dir_name = dir_path.name
 
-        if dir_name.startswith('.') and dir_name != '.':
+        if dir_name.startswith('.') and dir_name not in ('.xcassets',):
             return True
 
         if dir_name in self.exclude_dirs:
@@ -361,19 +462,17 @@ class ResourceCollector:
         return False
 
     def get_resource_type(self, file_path: Path) -> Optional[str]:
-        """파일의 리소스 타입 반환"""
         for type_name, type_info in self.RESOURCE_TYPES.items():
             if type_name not in self.active_types:
                 continue
 
             for ext in type_info['extensions']:
-                if file_path.suffix == ext or (type_info.get('is_directory') and file_path.suffix == ext):
+                if file_path.suffix == ext:
                     return type_name
 
         return None
 
     def get_destination_path(self, resource_file: Path, resource_type: str) -> Path:
-        """리소스 파일의 목적지 경로 결정"""
         type_info = self.RESOURCE_TYPES[resource_type]
         type_subdir = self.output_dir / type_info['subdirectory']
 
@@ -386,7 +485,6 @@ class ResourceCollector:
         else:
             filename = resource_file.name
 
-            # 중복 파일명 처리
             if self.filename_counter[resource_type][filename] > 0:
                 stem = resource_file.stem
                 ext = resource_file.suffix
@@ -400,7 +498,6 @@ class ResourceCollector:
         return dest_path
 
     def copy_resource(self, resource_file: Path, dest_path: Path, is_directory: bool = False) -> bool:
-        """리소스 파일 복사"""
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -417,7 +514,6 @@ class ResourceCollector:
             return False
 
     def extract_identifiers_from_file(self, resource_file: Path, resource_type: str):
-        """파일에서 식별자 추출"""
         type_info = self.RESOURCE_TYPES[resource_type]
         parser = type_info.get('parser')
 
@@ -426,27 +522,22 @@ class ResourceCollector:
 
         try:
             if resource_type == 'strings':
-                # strings는 Set[str] 반환
                 keys = parser.parse(resource_file)
                 if keys:
                     self.identifiers[resource_type]['localization_keys'].update(keys)
             else:
-                # 나머지는 Dict[str, Set[str]] 반환
                 parsed = parser.parse(resource_file)
                 for category, identifiers in parsed.items():
                     self.identifiers[resource_type][category].update(identifiers)
-        except Exception as e:
+        except Exception:
             pass
 
     def find_and_collect_resources(self) -> Dict[str, int]:
-        """리소스 파일 찾아서 수집"""
-
         def scan_directory(directory: Path):
             try:
                 for item in directory.iterdir():
                     if item.is_dir():
                         if not self.should_skip_directory(item):
-                            # CoreData, Assets 같은 디렉토리형 리소스 체크
                             resource_type = self.get_resource_type(item)
                             if resource_type:
                                 type_info = self.RESOURCE_TYPES[resource_type]
@@ -471,6 +562,10 @@ class ResourceCollector:
                     elif item.is_file():
                         resource_type = self.get_resource_type(item)
                         if resource_type:
+                            # xcschememanagement 파일 제외
+                            if 'xcschememanagement' in item.name.lower():
+                                continue
+
                             self.stats[resource_type]['found'] += 1
 
                             dest_path = self.get_destination_path(item, resource_type)
@@ -492,7 +587,6 @@ class ResourceCollector:
         return {rtype: stats['copied'] for rtype, stats in self.stats.items()}
 
     def collect_all(self):
-        """모든 리소스 수집"""
         print(f"🔍 프로젝트: {self.project_path}")
         print(f"📂 저장 위치: {self.output_dir}")
         print(f"📁 구조 유지: {'예' if self.preserve_structure else '아니오 (평탄화)'}")
@@ -500,14 +594,12 @@ class ResourceCollector:
         print(f"📦 수집 타입: {', '.join(sorted(self.active_types))}")
         print()
 
-        # 출력 디렉토리 초기화
         if self.output_dir.exists():
             print(f"🗑️  기존 {self.output_dir} 삭제 중...")
             shutil.rmtree(self.output_dir)
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 리소스 수집
         print("📝 리소스 파일 수집 중...")
         print("-" * 60)
 
@@ -516,7 +608,6 @@ class ResourceCollector:
         return copied_counts
 
     def print_summary(self):
-        """결과 요약 출력"""
         print("\n" + "=" * 60)
         print("📊 수집 결과 요약")
         print("=" * 60)
@@ -547,7 +638,6 @@ class ResourceCollector:
         print(f"\n저장 위치:   {self.output_dir}")
         print("=" * 60)
 
-        # 식별자 추출 결과
         if self.extract_identifiers and self.identifiers:
             print("\n" + "=" * 60)
             print("🔍 식별자 추출 결과")
@@ -564,7 +654,6 @@ class ResourceCollector:
             print("=" * 60)
 
     def save_identifiers_json(self, output_path: Path):
-        """식별자를 JSON으로 저장"""
         if not self.identifiers:
             print("⚠️  추출된 식별자가 없습니다.")
             return
@@ -581,7 +670,6 @@ class ResourceCollector:
                 for category, identifiers in categories.items()
             }
 
-        # 전체 식별자
         all_ids = set()
         for categories in self.identifiers.values():
             for identifiers in categories.values():
@@ -603,79 +691,36 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 리소스 타입:
-  plist, xib, storyboard, coredata, strings, assets, entitlements
+  plist, xib, storyboard, coredata, strings, entitlements, assets
 
 사용 예시:
   # 모든 리소스 수집
   python collect_resources.py /path/to/project
 
-  # plist만 수집
-  python collect_resources.py /path/to/project --types plist
+  # 특정 타입만 수집
+  python collect_resources.py /path/to/project --types plist assets
 
-  # plist와 xib만 수집
-  python collect_resources.py /path/to/project --types plist xib
-
-  # 수집 + 식별자 추출
-  python collect_resources.py /path/to/project --extract-identifiers
-
-  # 특정 타입만 수집 + 식별자 추출 + JSON 저장
-  python collect_resources.py /path/to/project --types plist xib --extract-identifiers --json identifiers.json
-
-  # 특정 디렉토리에 저장
-  python collect_resources.py /path/to/project -o ./output/resources
-
-  # 폴더 구조 유지
-  python collect_resources.py /path/to/project --preserve-structure
+  # 수집 + 식별자 추출 + JSON 저장
+  python collect_resources.py /path/to/project --extract-identifiers --json identifiers.json
         """
     )
 
-    parser.add_argument(
-        'project_path',
-        type=Path,
-        help='프로젝트 루트 경로'
-    )
-
-    parser.add_argument(
-        '-o', '--output',
-        type=Path,
-        default=Path('./resource'),
-        help='리소스 파일을 저장할 디렉토리 (기본: ./resource)'
-    )
-
-    parser.add_argument(
-        '--types',
-        nargs='+',
-        choices=list(ResourceCollector.RESOURCE_TYPES.keys()),
-        help='수집할 리소스 타입 지정 (미지정 시 전체)'
-    )
-
-    parser.add_argument(
-        '--preserve-structure',
-        action='store_true',
-        help='원본 폴더 구조 유지 (기본: 평탄화)'
-    )
-
-    parser.add_argument(
-        '--extract-identifiers',
-        action='store_true',
-        help='식별자 추출 수행'
-    )
-
-    parser.add_argument(
-        '--json',
-        type=Path,
-        help='식별자를 JSON 파일로 저장 (--extract-identifiers와 함께 사용)'
-    )
-
-    parser.add_argument(
-        '--exclude',
-        nargs='+',
-        help='제외할 디렉토리 추가'
-    )
+    parser.add_argument('project_path', type=Path, help='프로젝트 루트 경로')
+    parser.add_argument('-o', '--output', type=Path, default=Path('./resource'),
+                        help='리소스 파일을 저장할 디렉토리 (기본: ./resource)')
+    parser.add_argument('--types', nargs='+', choices=list(ResourceCollector.RESOURCE_TYPES.keys()),
+                        help='수집할 리소스 타입 지정 (미지정 시 전체)')
+    parser.add_argument('--preserve-structure', action='store_true',
+                        help='원본 폴더 구조 유지 (기본: 평탄화)')
+    parser.add_argument('--extract-identifiers', action='store_true',
+                        help='식별자 추출 수행')
+    parser.add_argument('--json', type=Path,
+                        help='식별자를 JSON 파일로 저장 (--extract-identifiers와 함께 사용)')
+    parser.add_argument('--exclude', nargs='+',
+                        help='제외할 디렉토리 추가')
 
     args = parser.parse_args()
 
-    # 경로 확인
     if not args.project_path.exists():
         print(f"❌ 경로를 찾을 수 없습니다: {args.project_path}")
         return 1
@@ -684,14 +729,12 @@ def main():
         print(f"❌ 디렉토리가 아닙니다: {args.project_path}")
         return 1
 
-    # 제외 디렉토리
     exclude_dirs = None
     if args.exclude:
-        default_exclude = ['.build', 'build', 'DerivedData', '.git', 'node_modules']
+        default_exclude = ['.build', 'build', 'DerivedData', '.git', 'node_modules', 'Pods', 'Carthage']
         exclude_dirs = default_exclude + args.exclude
 
-    # 수집 시작
-    print("🚀 리소스 파일 수집기")
+    print("🚀 리소스 파일 수집기 v2 (Assets 지원 + 바이너리 Plist)")
     print("=" * 60)
     print()
 
@@ -705,8 +748,6 @@ def main():
     )
 
     copied_counts = collector.collect_all()
-
-    # 결과
     collector.print_summary()
 
     total_copied = sum(copied_counts.values())
@@ -716,7 +757,6 @@ def main():
     else:
         print("\n⚠️  복사된 파일이 없습니다.")
 
-    # JSON 저장
     if args.json and args.extract_identifiers:
         collector.save_identifiers_json(args.json)
     elif args.json and not args.extract_identifiers:
