@@ -10,5 +10,10 @@ resource/
 exclude_id.txt
 data.json
 resources.txt
-
-
+swift-extractor/Package.resolved
+output/
+backup/headers/
+backup/resource/
+rule_output/
+rule_base/
+backup/process_rules.py

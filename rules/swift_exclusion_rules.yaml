@@ -1,22 +1,137 @@
 rules:
-  - id: "objc_attribute"
-    description: "@objc, @objcMembers 속성이 붙은 심볼은 Objective-C 런타임에 노출되므로 제외합니다."
-    reason: "Objective-C 런타임이 이름으로 심볼을 찾을 수 있습니다."
+  # =======================================================================
+  # 카테고리 1: 외부 파일 및 리소스 참조
+  # =======================================================================
+  - id: "EXTERNAL_FILE_REFERENCE"
+    description: "리소스(XIB, Storyboard, Plist, Assets) 또는 Obj-C 헤더에서 직접 참조되는 심볼"
+    reason: "파일에 이름이 문자열로 하드코딩되어 있어, 변경 시 런타임 오류가 발생합니다."
     pattern:
-      - find:
-          target: S_ANY
+      - find: { target: S }
       - where:
-          - S_ANY.attributes contains_any ["@objc", "@objcMembers"]
+          - "S.isReferencedByExternalFile == true"
 
-  - id: "system_lifecycle_method_override"
-    description: "시스템 클래스(e.g., UIViewController)의 생명주기 메서드를 오버라이드하는 경우 제외합니다."
-    reason: "시스템이 약속된 이름으로 직접 호출하므로 이름이 바뀌면 안 됩니다."
+  # =======================================================================
+  # 카테고리 2: OS 및 시스템 진입점
+  # =======================================================================
+  - id: "OS_ENTRY_POINT_MAIN_ATTRIBUTE"
+    description: "@main 속성이 붙은 앱의 진입점 타입"
+    reason: "시스템이 앱을 시작하기 위해 사용하는 약속된 심볼입니다."
     pattern:
-      - find:
-          target: S_METHOD
+      - find: { target: S }
       - where:
-          - S_METHOD.kind == "method"
-          - S_METHOD --OVERRIDES--> PARENT_METHOD
-          - PARENT_METHOD <--CONTAINS-- PARENT_CLASS
-          - PARENT_CLASS.isSystemSymbol == true
-# ... (이전과 동일한 다른 규칙들) ...
+          - "S.attributes contains '@main'"
+
+  - id: "OS_ENTRY_POINT_DELEGATES"
+    description: "AppDelegate, SceneDelegate 등 OS가 이름으로 직접 참조하는 핵심 클래스"
+    reason: "Info.plist 또는 시스템 프레임워크가 클래스 이름으로 인스턴스를 생성합니다."
+    pattern:
+      - find: { target: S }
+      - where:
+          - "S.kind in ['class', 'struct']"
+          - "S.name in ['AppDelegate', 'SceneDelegate']"
+
+  # =======================================================================
+  # 카테고리 3: 런타임 이름 참조 (리플렉션, Obj-C 런타임)
+  # =======================================================================
+  - id: "OBJC_ATTRIBUTE"
+    description: "@objc 또는 @objcMembers 속성으로 Objective-C 런타임에 노출된 심볼"
+    reason: "Selector, KVC 등이 문자열 이름으로 심볼을 찾을 수 있습니다."
+    pattern:
+      - find: { target: S }
+      - where:
+          - "S.attributes contains_any ['@objc', '@objcMembers']"
+
+  - id: "DYNAMIC_MODIFIER"
+    description: "'dynamic' 수정자로 동적 디스패치가 강제된 심볼"
+    reason: "메서드 스위즐링(Swizzling)의 대상이 되거나, 런타임을 통해 호출될 수 있습니다."
+    pattern:
+      - find: { target: S }
+      - where:
+          - "S.modifiers contains 'dynamic'"
+
+  # =======================================================================
+  # 카테고리 4: UI 및 생명주기 관련
+  # =======================================================================
+  - id: "UI_CONTROLLER_CLASSES"
+    description: "ViewController 또는 NavigationController 클래스들"
+    reason: "UI 관련 클래스는 Storyboard, XIB 또는 코드에서 이름으로 참조될 위험이 매우 높습니다."
+    pattern:
+      - find: { target: C }
+      - where:
+          - "C.kind == 'class'"
+          - "C.name contains 'Controller'"
+
+  - id: "UI_VIEW_CLASSES"
+    description: "이름에 'View'가 포함된 UI 관련 클래스 및 구조체"
+    reason: "UI 관련 클래스는 Storyboard, XIB 또는 코드에서 이름으로 참조될 위험이 매우 높습니다."
+    pattern:
+      - find: { target: C }
+      - where:
+          - "C.kind in ['class', 'struct']"
+          - "C.name contains 'View'"
+
+  - id: "UI_CELL_CLASSES"
+    description: "이름에 'Cell'이 포함된 UI 관련 클래스 및 구조체"
+    reason: "UI 관련 클래스는 Storyboard, XIB 또는 코드에서 이름으로 참조될 위험이 매우 높습니다."
+    pattern:
+      - find: { target: C }
+      - where:
+          - "C.kind in ['class', 'struct']"
+          - "C.name contains 'Cell'"
+
+  - id: "SYSTEM_LIFECYCLE_AND_DELEGATE_METHODS"
+    description: "시스템이 직접 호출하는 핵심 생명주기, 생성/소멸 및 델리게이트 메서드"
+    reason: "시스템 프레임워크가 약속된 이름으로 직접 호출하므로 이름이 바뀌면 안 됩니다."
+    pattern:
+      - find: { target: M }
+      - where:
+          - "M.kind == 'method'"
+          # [수정] init, deinit 추가
+          - "M.name in ['init', 'deinit', 'viewDidLoad', 'viewWillAppear', 'viewDidAppear', 'viewWillDisappear', 'viewDidDisappear', 'viewDidLayoutSubviews', 'touchesBegan', 'application', 'scene', 'sceneDidBecomeActive', 'sceneWillResignActive', 'sceneDidEnterBackground', 'sceneWillEnterForeground', 'collectionView', 'textFieldDidEndEditing']"
+
+  # =======================================================================
+  # 카테고리 5: 프레임워크 관례 및 표준 프로토콜
+  # =======================================================================
+  - id: "COMMON_CONVENTION_PROPERTIES"
+    description: "MVVM, RxSwift, UIKit 등에서 관례적으로 사용되는 핵심 프로퍼티 이름"
+    reason: "이름 변경 시 코드 전체의 아키텍처 및 가독성을 해치고, 프레임워크 연동에 실패할 수 있습니다."
+    pattern:
+      - find: { target: P }
+      - where:
+          - "P.kind == 'property'"
+          - "P.name in ['viewModel', 'disposeBag', 'reuseIdentifier']"
+
+  - id: "STANDARD_PROTOCOL_REQUIREMENTS"
+    description: "Identifiable, LocalizedError 등 표준 프로토콜이 요구하는 프로퍼티"
+    reason: "프로토콜의 약속된 요구사항으로, 이름이 바뀌면 기능이 동작하지 않거나 컴파일 오류가 발생합니다."
+    pattern:
+      - find: { target: P }
+      - where:
+          - "P.kind == 'property'"
+          - "P.name in ['id', 'errorDescription', 'recoverySuggestion', 'description', 'debugDescription', 'rawValue']"
+
+  - id: "COMMON_CONVENTION_METHODS"
+    description: "UseCase, Manager 등에서 관례적으로 사용되는 핵심 메서드 이름"
+    reason: "특정 아키텍처 패턴(UseCase, Repository 등)에서 약속된 진입점 메서드입니다."
+    pattern:
+      - find: { target: M }
+      - where:
+          - "M.kind == 'method'"
+          - "M.name in ['call', 'run', 'next', 'set']"
+
+  # =======================================================================
+  # 카테고리 6: 데이터 직렬화 및 모델 (🔥 수정됨)
+  # =======================================================================
+  - id: "CODABLE_WITHOUT_CODINGKEYS"
+    description: "CodingKeys가 없는 Codable 타입의 프로퍼티"
+    pattern:
+      - find: { target: P }
+      - where:
+          - "P.kind == 'property'"
+          - "P <--CONTAINS-- T"
+          # [수정] CONFORMS_TO를 INHERITS_FROM으로 변경하여 그래프와 일치시킴
+          - "T --INHERITS_FROM--> Proto"
+          - "Proto.name in ['Codable', 'Decodable', 'Encodable']"
+          - not_exists:
+              - "T --CONTAINS-- K"
+              - "K.name == 'CodingKeys'"

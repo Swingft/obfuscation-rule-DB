@@ -5,8 +5,8 @@ let package = Package(
     name: "SymbolExtractor",
     platforms: [.macOS(.v12)],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-syntax.git", from: "510.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.2.0"),
+        .package(url: "https://github.com/apple/swift-syntax.git", exact: "509.0.0")
     ],
     targets: [
         .executableTarget(
@@ -16,7 +16,6 @@ let package = Package(
                 .product(name: "SwiftParser", package: "swift-syntax"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ],
-            // Sources 디렉토리 하위의 경로를 명시해줍니다.
             path: "Sources"
         ),
     ]

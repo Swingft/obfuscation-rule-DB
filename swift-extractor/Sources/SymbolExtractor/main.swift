@@ -1,7 +1,7 @@
 import Foundation
 import ArgumentParser
 
-@main
+// [수정] @main 속성을 완전히 제거합니다.
 struct SymbolExtractor: ParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "SymbolExtractor",
@@ -14,19 +14,23 @@ struct SymbolExtractor: ParsableCommand {
     @Option(name: .shortAndLong, help: "Output path for the symbol_graph.json file.")
     var output: String = "symbol_graph.json"
 
+    @Option(name: .long, help: "Path to a text file containing names to exclude (from resources/headers).")
+    var externalExclusionList: String?
+
     func run() throws {
         print("🔍 Starting extraction from: \(projectPath)...")
         let projectURL = URL(fileURLWithPath: projectPath)
 
         let extractor = GraphExtractor()
-        try extractor.extract(from: projectURL)
+        try extractor.extract(from: projectURL, externalExclusionsFile: externalExclusionList)
 
         print("✅ Found \(extractor.symbols.count) symbols and \(extractor.edges.count) relationships.")
 
+        // [수정] ISO8-601 오타를 ISO8601로 바로잡았습니다.
         let graph = SymbolGraph(
             metadata: Metadata(
                 projectPath: projectPath,
-                analyzedAt: ISO8_601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: .withInternetDateTime)
+                analyzedAt: ISO8601DateFormatter().string(from: Date())
             ),
             symbols: Array(extractor.symbols.values),
             edges: Array(extractor.edges)
@@ -43,14 +47,6 @@ struct SymbolExtractor: ParsableCommand {
     }
 }
 
-// Swift 5.7+ 에서는 ISO8601DateFormatter.string(from:) 사용
-// 하위 호환성을 위해 직접 구현
-class ISO8_601DateFormatter {
-    private static let formatter = ISO8601DateFormatter()
-
-    static func string(from date: Date, timeZone: TimeZone, formatOptions: ISO8601DateFormatter.Options) -> String {
-        formatter.timeZone = timeZone
-        formatter.formatOptions = formatOptions
-        return formatter.string(from: date)
-    }
-}
+// [수정] 파일 맨 아래에 이 코드를 추가하여 프로그램을 직접 실행합니다.
+// 이것이 새로운 프로그램 시작점(Entry Point)이 됩니다.
+SymbolExtractor.main()

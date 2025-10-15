@@ -18,6 +18,9 @@ def main():
     parser.add_argument("--rules", default="../rules/swift_exclusion_rules.yaml", help="Path to the rules YAML file.")
     parser.add_argument("--output", default="../output/final_exclusion_list.json",
                         help="Path for the output exclusion list JSON file.")
+    # [추가] TXT 파일 출력을 위한 새로운 인자
+    parser.add_argument("--txt-output", default="../output/final_exclusion_list.txt",
+                        help="Path for the output exclusion name list TXT file.")
     args = parser.parse_args()
 
     print(f"📂 Loading symbol graph from: {args.symbol_graph_json}")
@@ -45,6 +48,8 @@ def main():
     print("💾 SAVING RESULTS")
     print("=" * 50)
     reporter.generate_json(results, args.output)
+    # [추가] 새로운 TXT 생성 함수 호출
+    reporter.generate_txt(results, args.txt_output)
 
     reporter.print_summary(results, graph)
 

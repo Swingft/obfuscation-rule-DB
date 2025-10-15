@@ -19,11 +19,14 @@ struct SymbolNode: Codable, Hashable, Identifiable {
     var attributes: [String]
     var modifiers: [String]
     var isSystemSymbol: Bool = false
+
+    // [추가] 리소스, 헤더 등 외부 파일에서 참조되는지 여부
+    var isReferencedByExternalFile: Bool = false
 }
 
 struct SymbolEdge: Codable, Hashable {
-    let from: String // source symbol id
-    let to: String   // target symbol id
+    let from: String
+    let to: String
     let type: EdgeType
 }
 
@@ -42,5 +45,4 @@ enum EdgeType: String, Codable, Hashable {
     case conformsTo = "CONFORMS_TO"
     case overrides = "OVERRIDES"
     case contains = "CONTAINS"
-    case referencedByFile = "REFERENCED_BY_FILE"
 }

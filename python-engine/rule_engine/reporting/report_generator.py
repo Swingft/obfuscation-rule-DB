@@ -1,7 +1,6 @@
 import json
 from typing import List, Dict, Any
 
-# ⬇️ 상대 경로로 수정
 from ..graph.graph_loader import SymbolGraph
 
 
@@ -16,6 +15,25 @@ class ReportGenerator:
             print(f"📄 Exclusion list saved to: {output_path}")
         except IOError as e:
             print(f"❌ Error: Failed to write report to {output_path}. {e}")
+
+    def generate_txt(self, results: List[Dict[str, Any]], output_path: str):
+        """[추가된 기능] 결과에서 식별자 이름만 추출하여 TXT 파일로 저장합니다."""
+        if not output_path:
+            return
+
+        try:
+            # 'name' 키만 추출하고 set을 사용해 중복을 자동으로 제거합니다.
+            identifier_names = {item['name'] for item in results if 'name' in item}
+
+            # 알파벳 순으로 정렬합니다.
+            sorted_names = sorted(list(identifier_names))
+
+            with open(output_path, 'w', encoding='utf-8') as f:
+                for name in sorted_names:
+                    f.write(name + '\n')
+            print(f"📄 Exclusion name list saved to: {output_path} ({len(sorted_names)} unique names)")
+        except IOError as e:
+            print(f"❌ Error: Failed to write TXT report to {output_path}. {e}")
 
     def print_summary(self, results: List[Dict[str, Any]], graph: SymbolGraph):
         """콘솔에 분석 결과 요약을 출력합니다."""

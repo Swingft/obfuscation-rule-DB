@@ -282,36 +282,26 @@ class ObjCHeaderParser:
 
     @classmethod
     def _extract_properties(cls, content: str) -> Set[str]:
-        """✅ 완벽 개선: @property + SWIFT_CLASS_PROPERTY 모두 추출"""
+        """✅ 완벽 개선: @property + SWIFT_CLASS_PROPERTY + getter/setter 모두 추출"""
         properties = set()
 
-        # 1. 일반 @property 패턴
-        # @property (attrs) Type * name;
-        prop_pattern = re.compile(
-            r'@property\s*\(([^)]*)\)\s*[^;]+?\b(\w+)\s*;',
-            re.MULTILINE | re.DOTALL
-        )
+        # 1. 일반 @property 패턴: @property (attrs) Type * name;
+        prop_pattern = re.compile(r'@property\s*\(([^)]*)\)\s*[^;]+?\b(\w+)\s*;', re.MULTILINE | re.DOTALL)
 
         for match in prop_pattern.finditer(content):
             attributes = match.group(1)
             prop_name = match.group(2)
+            if not prop_name or len(prop_name) <= 1: continue
 
-            if not prop_name or len(prop_name) <= 1:
-                continue
-
-            # getter
+            # getter 추출
             getter_match = re.search(r'getter\s*=\s*(\w+)', attributes)
             if getter_match:
                 properties.add(getter_match.group(1))
             else:
                 properties.add(prop_name)
 
-            # setter (readonly가 아니고, class property도 아닌 경우)
-            is_readonly = 'readonly' in attributes
-            is_class_property = 'class' in attributes
-            is_delegate_like = 'delegate' in prop_name.lower() or 'datasource' in prop_name.lower()
-
-            if not is_readonly and not is_class_property and not is_delegate_like:
+            # setter 추출 (readonly가 아닐 때)
+            if 'readonly' not in attributes:
                 setter_match = re.search(r'setter\s*=\s*(\w+:)', attributes)
                 if setter_match:
                     properties.add(setter_match.group(1))
@@ -319,21 +309,15 @@ class ObjCHeaderParser:
                     setter = f"set{prop_name[0].upper()}{prop_name[1:]}:"
                     properties.add(setter)
 
-        # 2. ✅ SWIFT_CLASS_PROPERTY 패턴 추가
-        # SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) Type * name;)
+        # 2. SWIFT_CLASS_PROPERTY 패턴 추가
         swift_class_prop_pattern = re.compile(
-            r'SWIFT_CLASS_PROPERTY\s*\(\s*@property\s*\(([^)]*)\)\s*[^;]+?\b(\w+)\s*;\s*\)',
-            re.MULTILINE | re.DOTALL
-        )
-
+            r'SWIFT_CLASS_PROPERTY\s*\(\s*@property\s*\(([^)]*)\)\s*[^;]+?\b(\w+)\s*;\s*\)', re.MULTILINE | re.DOTALL)
         for match in swift_class_prop_pattern.finditer(content):
             attributes = match.group(1)
             prop_name = match.group(2)
+            if not prop_name or len(prop_name) <= 1: continue
 
-            if not prop_name or len(prop_name) <= 1:
-                continue
-
-            # class property는 getter만 (readonly 임)
+            # class property는 getter만 (주로 readonly)
             getter_match = re.search(r'getter\s*=\s*(\w+)', attributes)
             if getter_match:
                 properties.add(getter_match.group(1))
@@ -344,24 +328,20 @@ class ObjCHeaderParser:
 
     @classmethod
     def _filter_identifiers(cls, identifiers: Set[str], id_type: str) -> Set[str]:
-        """✅ 최종 필터링"""
-
+        """✅ 최종 필터링: 불필요한 매크로 및 시스템 타입 제거 강화"""
         SYSTEM_TYPES = {
-            'NSInteger', 'NSUInteger', 'CGFloat', 'BOOL', 'id', 'void', 'int',
-            'float', 'double', 'char', 'unsigned', 'signed', 'long', 'short',
-            'NSSecureCoding', 'NSCopying', 'NSCoding', 'CFTimeInterval',
-            'NSTimeInterval', 'CGRect', 'CGPoint', 'CGSize', 'NSRange',
-            'char16_t', 'char32_t', 'uint_least16_t', 'uint_least32_t',
+            'NSInteger', 'NSUInteger', 'CGFloat', 'BOOL', 'id', 'void', 'int', 'float', 'double', 'char',
+            'unsigned', 'signed', 'long', 'short', 'NSSecureCoding', 'NSCopying', 'NSCoding',
+            'CFTimeInterval', 'NSTimeInterval', 'CGRect', 'CGPoint', 'CGSize', 'NSRange',
         }
 
-        # ✅ SWIFT_CLASS 같은 매크로 정의 제외
         EXCLUDE_PATTERNS = [
             r'^API_DEPRECATED.*', r'^API_AVAILABLE.*',
             r'^NS_SWIFT_UI_ACTOR$', r'^NS_AVAILABLE.*', r'^NS_DEPRECATED.*',
             r'^NS_ENUM$', r'^NS_OPTIONS$', r'^NS_ERROR_ENUM$', r'^NS_CLOSED_ENUM$',
             r'^NS_DESIGNATED_INITIALIZER$', r'^UI_APPEARANCE_SELECTOR$',
             r'^OBJC_DESIGNATED_INITIALIZER$', r'^IB_DESIGNABLE$', r'^IBSegueAction$',
-            r'^SWIFT_CLASS$', r'^SWIFT_PROTOCOL$', r'^SWIFT_ENUM$',  # 매크로 정의 제외
+            r'^SWIFT_CLASS$', r'^SWIFT_PROTOCOL$', r'^SWIFT_ENUM$',
             r'^SWIFT_CLASS_PROPERTY$', r'^SWIFT_RESILIENT_CLASS$',
             r'^__\w+__$',
             r'^_Nonnull$', r'^_Nullable$', r'^_Null_unspecified$',
@@ -369,25 +349,16 @@ class ObjCHeaderParser:
 
         filtered = set()
         for name in identifiers:
-            if not name or len(name) <= 1:
-                continue
+            if not name or len(name) <= 1: continue
+            if not (name[0].isalpha() or name.startswith('_')): continue
+            if name in SYSTEM_TYPES: continue
+            if any(re.match(pattern, name) for pattern in EXCLUDE_PATTERNS): continue
 
-            if not (name[0].isalpha() or name.startswith('_')):
+            # 매크로 파라미터 형태 제외 (예: _Val)
+            if name.startswith('_') and not name.startswith('_Tt') and len(name) > 1 and name[1:].islower():
                 continue
-
-            if name in SYSTEM_TYPES:
-                continue
-
-            if any(re.match(pattern, name) for pattern in EXCLUDE_PATTERNS):
-                continue
-
-            # 매크로 파라미터 형태 제외
-            if name.startswith('_'):
-                if not name.startswith('_Tt') and len(name) > 1 and name[1:].islower():
-                    continue
 
             filtered.add(name)
-
         return filtered
 
 

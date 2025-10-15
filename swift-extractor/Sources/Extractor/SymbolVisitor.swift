@@ -1,4 +1,5 @@
 import SwiftSyntax
+import SwiftParser  // 👈 이 import 추가!
 import Foundation
 
 class SymbolVisitor: SyntaxVisitor {
@@ -7,7 +8,7 @@ class SymbolVisitor: SyntaxVisitor {
 
     private let sourceLocationConverter: SourceLocationConverter
     private let fileURL: URL
-    private var parentStack = [String]() // 부모 심볼의 ID 추적
+    private var parentStack = [String]()
 
     init(sourceText: String, fileURL: URL) {
         self.sourceLocationConverter = SourceLocationConverter(
@@ -22,14 +23,14 @@ class SymbolVisitor: SyntaxVisitor {
         let location = node.startLocation(converter: sourceLocationConverter)
         return SourceLocation(
             file: fileURL.lastPathComponent,
-            line: location.line ?? 0,
-            column: location.column ?? 0
+            line: location.line,
+            column: location.column
         )
     }
 
     override func visit(_ node: ClassDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: node.name.text, kind: .class, node: node)
+        let symbol = createSymbol(id: id, name: node.name.text, kind: .class, decl: node)
         symbols.append(symbol)
         handleInheritance(for: id, from: node.inheritanceClause)
         handleContainment(childId: id)
@@ -43,7 +44,7 @@ class SymbolVisitor: SyntaxVisitor {
 
     override func visit(_ node: StructDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: node.name.text, kind: .struct, node: node)
+        let symbol = createSymbol(id: id, name: node.name.text, kind: .struct, decl: node)
         symbols.append(symbol)
         handleInheritance(for: id, from: node.inheritanceClause)
         handleContainment(childId: id)
@@ -57,7 +58,7 @@ class SymbolVisitor: SyntaxVisitor {
 
     override func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: node.name.text, kind: .enum, node: node)
+        let symbol = createSymbol(id: id, name: node.name.text, kind: .enum, decl: node)
         symbols.append(symbol)
         handleInheritance(for: id, from: node.inheritanceClause)
         handleContainment(childId: id)
@@ -71,13 +72,11 @@ class SymbolVisitor: SyntaxVisitor {
 
     override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: node.name.text, kind: .method, node: node)
+        let symbol = createSymbol(id: id, name: node.name.text, kind: .method, decl: node)
         symbols.append(symbol)
         handleContainment(childId: id)
 
         if symbol.modifiers.contains("override") {
-            // 오버라이드된 메서드를 나중에 해결하기 위한 임시 엣지 생성
-            // to 필드에 메서드 이름을 저장 (나중에 실제 ID로 변환됨)
             edges.append(SymbolEdge(from: id, to: "METHOD:\(symbol.name)", type: .overrides))
         }
         return .visitChildren
@@ -87,7 +86,7 @@ class SymbolVisitor: SyntaxVisitor {
         for binding in node.bindings {
             if let pattern = binding.pattern.as(IdentifierPatternSyntax.self) {
                 let id = UUID().uuidString
-                let symbol = createSymbol(id: id, name: pattern.identifier.text, kind: .property, node: node)
+                let symbol = createSymbol(id: id, name: pattern.identifier.text, kind: .property, decl: node)
                 symbols.append(symbol)
                 handleContainment(childId: id)
             }
@@ -97,22 +96,57 @@ class SymbolVisitor: SyntaxVisitor {
 
     // --- Helper Functions ---
 
-    private func createSymbol<T: DeclSyntaxProtocol>(id: String, name: String, kind: SymbolKind, node: T) -> SymbolNode {
-        let attributes = node.attributes.map {
-            $0.trimmedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        let modifiers = node.modifiers.map {
-            $0.name.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+    private func createSymbol(id: String, name: String, kind: SymbolKind, decl: some DeclSyntaxProtocol) -> SymbolNode {
+        // attributes와 modifiers를 안전하게 추출
+        let attributes = extractAttributes(from: decl)
+        let modifiers = extractModifiers(from: decl)
 
         return SymbolNode(
             id: id,
             name: name,
             kind: kind,
-            location: location(for: node),
+            location: location(for: decl),
             attributes: attributes,
             modifiers: modifiers
         )
+    }
+
+    private func extractAttributes(from decl: some DeclSyntaxProtocol) -> [String] {
+        // DeclSyntaxProtocol은 attributes를 직접 제공하지 않으므로
+        // 구체 타입별로 처리
+        var attrs: [String] = []
+
+        if let classDecl = decl.as(ClassDeclSyntax.self) {
+            attrs = classDecl.attributes.map { $0.trimmedDescription }
+        } else if let structDecl = decl.as(StructDeclSyntax.self) {
+            attrs = structDecl.attributes.map { $0.trimmedDescription }
+        } else if let enumDecl = decl.as(EnumDeclSyntax.self) {
+            attrs = enumDecl.attributes.map { $0.trimmedDescription }
+        } else if let funcDecl = decl.as(FunctionDeclSyntax.self) {
+            attrs = funcDecl.attributes.map { $0.trimmedDescription }
+        } else if let varDecl = decl.as(VariableDeclSyntax.self) {
+            attrs = varDecl.attributes.map { $0.trimmedDescription }
+        }
+
+        return attrs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    private func extractModifiers(from decl: some DeclSyntaxProtocol) -> [String] {
+        var mods: [String] = []
+
+        if let classDecl = decl.as(ClassDeclSyntax.self) {
+            mods = classDecl.modifiers.map { $0.name.text }
+        } else if let structDecl = decl.as(StructDeclSyntax.self) {
+            mods = structDecl.modifiers.map { $0.name.text }
+        } else if let enumDecl = decl.as(EnumDeclSyntax.self) {
+            mods = enumDecl.modifiers.map { $0.name.text }
+        } else if let funcDecl = decl.as(FunctionDeclSyntax.self) {
+            mods = funcDecl.modifiers.map { $0.name.text }
+        } else if let varDecl = decl.as(VariableDeclSyntax.self) {
+            mods = varDecl.modifiers.map { $0.name.text }
+        }
+
+        return mods.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
     private func handleContainment(childId: String) {
@@ -125,7 +159,6 @@ class SymbolVisitor: SyntaxVisitor {
         guard let clause = clause else { return }
         for type in clause.inheritedTypes {
             let parentTypeName = type.type.trimmedDescription
-            // 임시로 타입 이름을 저장 (나중에 실제 ID로 변환됨)
             let edge = SymbolEdge(from: id, to: "TYPE:\(parentTypeName)", type: .inheritsFrom)
             edges.append(edge)
         }

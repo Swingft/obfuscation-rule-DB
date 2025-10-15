@@ -306,143 +306,58 @@ class XIBStoryboardParser:
 
 
 class PlistParser:
-    """Plist 파일에서 식별자 추출"""
+    """Plist 파일에서 식별자 추출 (🔥 키 목록 대폭 강화)"""
+
+    # 룰베이스 팀 자료와 Apple 문서를 기반으로 키 목록 확장
+    PRINCIPAL_CLASS_KEYS = {
+        "NSPrincipalClass", "NSExtensionPrincipalClass", "UISceneDelegateClassName",
+        "NSApplicationClass", "NSServices", "NSClass"
+    }
+    STRING_IDENTIFIER_KEYS = {
+        "CFBundleIdentifier", "CFBundleName", "CFBundleDisplayName",
+        "UIApplicationShortcutItemType", "WKWebsiteDataStoreIdentifier"
+    }
 
     @classmethod
     def parse(cls, file_path: Path) -> Dict[str, Set[str]]:
         result = defaultdict(set)
-
         try:
-            tree = ET.parse(file_path)
-            root = tree.getroot()
-
-            main_dict = root.find('dict')
-            if main_dict is None:
-                return dict(result)
-
-            cls._parse_dict(main_dict, result, [])
-
+            # [수정] xml.etree.ElementTree 대신 plistlib을 사용하여 바이너리 Plist도 지원
+            with open(file_path, 'rb') as f:
+                plist_data = plistlib.load(f)
+            cls._recursive_parse(plist_data, result)
         except Exception:
             pass
-
         return dict(result)
 
     @classmethod
-    def _parse_dict(cls, dict_elem, result: defaultdict, key_path: List[str]):
-        """재귀적으로 dict 파싱"""
-        children = list(dict_elem)
-        i = 0
-
-        while i < len(children):
-            if children[i].tag == 'key':
-                key = children[i].text
-                if i + 1 < len(children):
-                    value_elem = children[i + 1]
-
-                    # URL Schemes
-                    if key == 'CFBundleURLSchemes' and value_elem.tag == 'array':
-                        for string_elem in value_elem.findall('string'):
-                            text = string_elem.text
-                            if text and cls._is_valid_url_scheme(text):
-                                result['url_schemes'].add(text)
-
-                    # Bundle URL Name
-                    elif key == 'CFBundleURLName' and value_elem.tag == 'string':
-                        text = value_elem.text
-                        if text and cls._is_bundle_identifier(text):
-                            result['bundle_url_names'].add(text)
-
-                    # App Query Schemes
-                    elif key == 'LSApplicationQueriesSchemes' and value_elem.tag == 'array':
-                        for string_elem in value_elem.findall('string'):
-                            text = string_elem.text
-                            if text and cls._is_valid_url_scheme(text):
-                                result['app_query_schemes'].add(text)
-
-                    # Background Task Identifiers
-                    elif key == 'BGTaskSchedulerPermittedIdentifiers' and value_elem.tag == 'array':
-                        for string_elem in value_elem.findall('string'):
-                            text = string_elem.text
-                            if text and cls._is_bundle_identifier(text):
-                                result['background_task_ids'].add(text)
-
-                    # Document Types
-                    elif key == 'CFBundleTypeName' and value_elem.tag == 'string':
-                        text = value_elem.text
-                        if text and cls._is_bundle_identifier(text):
-                            result['document_types'].add(text)
-
-                    # UTI Identifiers
-                    elif key == 'UTTypeIdentifier' and value_elem.tag == 'string':
-                        text = value_elem.text
-                        if text and cls._is_bundle_identifier(text):
-                            result['uti_identifiers'].add(text)
-
-                    # User Activity Types
-                    elif key == 'NSUserActivityTypes' and value_elem.tag == 'array':
-                        for string_elem in value_elem.findall('string'):
-                            text = string_elem.text
-                            if text and cls._is_bundle_identifier(text):
-                                result['user_activity_types'].add(text)
-
-                    # 재귀
-                    elif value_elem.tag == 'dict':
-                        cls._parse_dict(value_elem, result, key_path + [key])
-                    elif value_elem.tag == 'array':
-                        cls._parse_array(value_elem, result, key_path + [key])
-
-                    i += 2
+    def _recursive_parse(cls, data: any, result: defaultdict):
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if key in cls.PRINCIPAL_CLASS_KEYS and isinstance(value, str):
+                    if cls._is_valid_class_name(value):
+                        result['principal_classes'].add(value)
+                elif key in cls.STRING_IDENTIFIER_KEYS and isinstance(value, str):
+                    if cls._is_valid_bundle_id_style(value):
+                        result['bundle_identifiers'].add(value)
+                # [추가] NSUserActivityTypes 키 처리
+                elif key == "NSUserActivityTypes" and isinstance(value, list):
+                    for activity_type in value:
+                        if isinstance(activity_type, str) and cls._is_valid_bundle_id_style(activity_type):
+                            result['user_activity_types'].add(activity_type)
                 else:
-                    i += 1
-            else:
-                i += 1
-
-    @classmethod
-    def _parse_array(cls, array_elem, result: defaultdict, key_path: List[str]):
-        """배열 파싱"""
-        for child in array_elem:
-            if child.tag == 'dict':
-                cls._parse_dict(child, result, key_path)
+                    cls._recursive_parse(value, result)
+        elif isinstance(data, list):
+            for item in data:
+                cls._recursive_parse(item, result)
 
     @staticmethod
-    def _is_valid_url_scheme(scheme: str) -> bool:
-        """유효한 URL Scheme인지 검사"""
-        if not scheme or len(scheme) < 2:
-            return False
-
-        # 첫 글자는 영문자
-        if not scheme[0].isalpha():
-            return False
-
-        # 나머지: 영문자, 숫자, 점, 하이픈, 플러스
-        for char in scheme:
-            if not (char.isalnum() or char in '.+-'):
-                return False
-
-        return True
+    def _is_valid_class_name(name: str) -> bool:
+        return name and len(name) > 1 and (name[0].isupper() or name.startswith('$'))
 
     @staticmethod
-    def _is_bundle_identifier(value: str) -> bool:
-        """Bundle Identifier 패턴인지 검사"""
-        if not value or len(value) < 3:
-            return False
-
-        # 특수 케이스: $(VARIABLE) 형태
-        if value.startswith('$(') and ')' in value:
-            return True
-
-        # 일반 케이스: com.example.app
-        # 첫 글자는 영문자 또는 $
-        if not (value[0].isalpha() or value[0] == '$'):
-            return False
-
-        # 허용 문자: 영문자, 숫자, 점, 하이픈, 언더스코어, $, (, )
-        allowed_chars = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-$()')
-        for char in value:
-            if char not in allowed_chars:
-                return False
-
-        return True
+    def _is_valid_bundle_id_style(value: str) -> bool:
+        return value and len(value) > 3 and ('.' in value or value.startswith('$'))
 
 
 class CoreDataParser:
