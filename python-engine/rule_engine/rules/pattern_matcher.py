@@ -3,25 +3,27 @@ from ..graph.graph_loader import SymbolGraph
 
 
 class PatternMatcher:
-    """규칙의 패턴을 심볼 그래프에 매칭시킵니다. (🔥 상속 계층 전체 탐색 기능 추가)"""
+    """Matches patterns from rules against the symbol graph. (Final Version)"""
 
     def __init__(self, graph: SymbolGraph):
         self.graph = graph
         self.path_map = {
-            'parent': {'direction': 'in', 'type': 'CONTAINS'},
-            'child': {'direction': 'out', 'type': 'CONTAINS'},
+            'parent': {'direction': 'in', 'type': ['CONTAINS']},
+            'child': {'direction': 'out', 'type': ['CONTAINS']},
             'superclass': {'direction': 'out', 'type': ['INHERITS_FROM', 'CONFORMS_TO']},
         }
 
     def match(self, pattern: List[Dict[str, Any]]) -> Set[str]:
         find_clause = next((item['find'] for item in pattern if 'find' in item), None)
         where_clauses = next((item['where'] for item in pattern if 'where' in item), [])
-        if not find_clause or not find_clause.get('target'): return set()
+        if not find_clause or not find_clause.get('target'):
+            return set()
 
         candidate_ids = set(self.graph.find_all_nodes())
         for condition in where_clauses:
             candidate_ids = self._apply_single_condition(candidate_ids, condition)
-            if not candidate_ids: break
+            if not candidate_ids:
+                break
         return candidate_ids
 
     def _apply_single_condition(self, current_ids: Set[str], condition: Any) -> Set[str]:
@@ -36,23 +38,28 @@ class PatternMatcher:
         return current_ids
 
     def _filter_by_property(self, current_ids: Set[str], condition: str) -> Set[str]:
+        """Filters nodes by property, with support for multi-step path traversal."""
         matching_ids = set()
         parts = condition.split()
-        if len(parts) < 3: return matching_ids
+        if len(parts) < 3:
+            return matching_ids
 
         prop_path_str, operator, value_str = parts[0], parts[1], ' '.join(parts[2:])
         value = self._parse_value(value_str)
 
         path_components = prop_path_str.split('.')
-        if len(path_components) < 2: return matching_ids
+        if len(path_components) < 1:
+            return matching_ids
 
-        _ = path_components.pop(0)
-        target_prop = path_components.pop()
-        traversal_path = path_components
+        # Correctly separate traversal path from the final property to check
+        variable_name = path_components[0]
+        traversal_path = path_components[1:-1]
+        target_prop = path_components[-1]
 
         for node_id in current_ids:
             nodes_to_check_ids = {node_id}
 
+            # Traverse the path (e.g., 'parent', 'superclass')
             for path_key in traversal_path:
                 if path_key not in self.path_map:
                     nodes_to_check_ids = set()
@@ -60,8 +67,9 @@ class PatternMatcher:
 
                 next_nodes_ids = set()
                 path_info = self.path_map[path_key]
-                edge_types = path_info['type'] if isinstance(path_info['type'], list) else [path_info['type']]
+                edge_types = path_info['type']
 
+                # For 'superclass', traverse the entire inheritance chain (BFS)
                 if path_key == 'superclass':
                     q = list(nodes_to_check_ids)
                     visited_ids = set(q)
@@ -75,7 +83,7 @@ class PatternMatcher:
                                     visited_ids.add(nid)
                                     q.append(nid)
                     next_nodes_ids = visited_ids
-                else:  # parent, child
+                else:  # For 'parent' or 'child', traverse only one step
                     for current_id in nodes_to_check_ids:
                         for etype in edge_types:
                             neighbors = self.graph.get_neighbors(current_id, edge_type=etype,
@@ -84,9 +92,11 @@ class PatternMatcher:
 
                 nodes_to_check_ids = next_nodes_ids
 
+            # Check the property on all nodes reached at the end of the path
             for final_id in nodes_to_check_ids:
                 final_node = self.graph.get_node(final_id)
-                if not final_node: continue
+                if not final_node:
+                    continue
 
                 prop_value = final_node.get(target_prop)
                 if self._check_value(prop_value, operator, value):
@@ -103,9 +113,11 @@ class PatternMatcher:
             direction, parts = 'in', condition.split('<--')
         else:
             return matching_ids
+
         left, right = parts[0].strip(), parts[1].strip()
         if '--' in left: edge_type = left.rsplit('--', 1)[1].strip()
         if '--' in right and not edge_type: edge_type = right.split('--', 1)[0].strip()
+
         for node_id in current_ids:
             if self.graph.get_neighbors(node_id, edge_type=edge_type, direction=direction):
                 matching_ids.add(node_id)
@@ -154,3 +166,4 @@ class PatternMatcher:
         if operator == 'starts_with':
             return isinstance(prop_value, str) and prop_value.startswith(required_value)
         return False
+

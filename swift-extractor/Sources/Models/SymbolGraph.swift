@@ -18,9 +18,12 @@ struct SymbolNode: Codable, Hashable, Identifiable {
     var location: SourceLocation?
     var attributes: [String]
     var modifiers: [String]
-    var isSystemSymbol: Bool = false
+    var typeName: String?
 
-    // [추가] 리소스, 헤더 등 외부 파일에서 참조되는지 여부
+    // [✨ 추가] 부모 클래스의 전체 상속 체인을 저장
+    var typeInheritanceChain: [String]?
+
+    var isSystemSymbol: Bool = false
     var isReferencedByExternalFile: Bool = false
 }
 
@@ -37,7 +40,7 @@ struct SourceLocation: Codable, Hashable {
 }
 
 enum SymbolKind: String, Codable, Hashable {
-    case `class`, `struct`, `enum`, `protocol`, `method`, property, function, unknown
+    case `class`, `struct`, `enum`, `protocol`, method, property, function, unknown, initializer, `subscript`, `operator`
 }
 
 enum EdgeType: String, Codable, Hashable {
@@ -45,4 +48,5 @@ enum EdgeType: String, Codable, Hashable {
     case conformsTo = "CONFORMS_TO"
     case overrides = "OVERRIDES"
     case contains = "CONTAINS"
+    case isOfType = "IS_OF_TYPE"
 }

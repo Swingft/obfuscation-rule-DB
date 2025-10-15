@@ -1,17 +1,13 @@
 rules:
-  # 카테고리 1, 2, 3, 4, 5는 이전과 동일하게 유지
+  # =======================================================================
+  # 카테고리 1: 직접 참조 및 진입점
+  # =======================================================================
   - id: "EXTERNAL_FILE_REFERENCE"
-    description: "리소스(XIB, Storyboard, Plist, Assets) 또는 Obj-C 헤더에서 직접 참조되는 심볼"
+    description: "리소스 또는 Obj-C 헤더에서 직접 참조되는 심볼"
     pattern:
       - find: { target: S }
       - where:
           - "S.isReferencedByExternalFile == true"
-  - id: "OS_ENTRY_POINT_MAIN_ATTRIBUTE"
-    description: "@main 속성이 붙은 앱의 진입점 타입"
-    pattern:
-      - find: { target: S }
-      - where:
-          - "S.attributes contains '@main'"
   - id: "OS_ENTRY_POINT_DELEGATES"
     description: "AppDelegate, SceneDelegate 등 OS가 이름으로 직접 참조하는 핵심 클래스"
     pattern:
@@ -24,114 +20,89 @@ rules:
       - find: { target: S }
       - where:
           - "S.attributes contains_any ['@objc', '@objcMembers']"
-  - id: "DYNAMIC_MODIFIER"
-    description: "'dynamic' 수정자로 동적 디스패치가 강제된 심볼"
+
+  # =======================================================================
+  # 카테고리 2: 상속 및 구현 (UIKit 프로젝트 핵심)
+  # =======================================================================
+  - id: "UI_FRAMEWORK_SUBCLASSES"
+    description: "주요 UI 프레임워크 클래스의 모든 서브클래스"
+    pattern:
+      - find: { target: C }
+      - where:
+          - "C.kind in ['class', 'struct']"
+          - "C.typeInheritanceChain contains_any ['UIViewController', 'UINavigationController', 'UIView', 'UIResponder', 'UITableViewCell', 'UICollectionViewCell']"
+
+  - id: "SYSTEM_LIFECYCLE_AND_DELEGATE_METHODS"
+    description: "시스템이 직접 호출하는 핵심 생명주기 및 델리게이트 메서드"
+    pattern:
+      - find: { target: M }
+      - where:
+          - "M.kind == 'method'"
+          # ✨ 마지막 누락분 추가
+          - "M.name in ['viewDidLoad', 'viewWillAppear', 'viewDidAppear', 'viewWillDisappear', 'viewDidDisappear', 'viewDidLayoutSubviews', 'touchesBegan', 'application', 'scene', 'sceneDidBecomeActive', 'sceneWillResignActive', 'sceneDidEnterBackground', 'sceneWillEnterForeground', 'sceneDidDisconnect', 'textFieldDidEndEditing', 'preferredStatusBarStyle']"
+          - "M.typeInheritanceChain contains_any ['UIViewController', 'UIResponder', 'AppDelegate', 'SceneDelegate', 'UITextFieldDelegate']"
+
+  # =======================================================================
+  # 카테고리 3: 일반 관례 및 이름 (지식 베이스 완성)
+  # =======================================================================
+  - id: "SYSTEM_TYPE_NAMES"
+    description: "코드에서 명시적으로 사용되는 시스템 타입 이름"
     pattern:
       - find: { target: S }
       - where:
-          - "S.modifiers contains 'dynamic'"
-  - id: "UI_CONTROLLER_CLASSES"
-    description: "ViewController 또는 NavigationController 클래스들"
-    pattern:
-      - find: { target: C }
-      - where:
-          - "C.kind == 'class'"
-          - "C.name contains 'Controller'"
-  - id: "UI_VIEW_CLASSES"
-    description: "이름에 'View'가 포함된 UI 관련 클래스 및 구조체"
-    pattern:
-      - find: { target: C }
-      - where:
-          - "C.kind in ['class', 'struct']"
-          - "C.name contains 'View'"
-  - id: "UI_CELL_CLASSES"
-    description: "이름에 'Cell'이 포함된 UI 관련 클래스 및 구조체"
-    pattern:
-      - find: { target: C }
-      - where:
-          - "C.kind in ['class', 'struct']"
-          - "C.name contains 'Cell'"
-  - id: "SYSTEM_LIFECYCLE_AND_DELEGATE_METHODS"
-    description: "시스템이 직접 호출하는 핵심 생명주기, 생성/소멸 및 델리게이트 메서드"
-    pattern:
-      - find: { target: M }
-      - where:
-          - "M.kind == 'method'"
-          - "M.name in ['init', 'deinit', 'viewDidLoad', 'viewWillAppear', 'viewDidAppear', 'viewWillDisappear', 'viewDidDisappear', 'viewDidLayoutSubviews', 'touchesBegan', 'application', 'scene', 'sceneDidBecomeActive', 'sceneWillResignActive', 'sceneDidEnterBackground', 'sceneWillEnterForeground', 'collectionView', 'textFieldDidEndEditing', 'layoutSubviews', 'prepareForReuse']"
-  - id: "COMMON_CONVENTION_PROPERTIES"
-    description: "MVVM, RxSwift, UIKit 등에서 관례적으로 사용되는 핵심 프로퍼티 이름"
-    pattern:
-      - find: { target: P }
-      - where:
-          - "P.kind == 'property'"
-          - "P.name in ['viewModel', 'disposeBag', 'reuseIdentifier', 'cancellable']"
+          - "S.isSystemSymbol == true"
+          # ✨ 마지막 누락분 추가
+          - "S.name in ['Array', 'Sequence', 'Notification.Name', 'MKMapView', 'UIView', 'UIButton', 'UICollectionView', 'UIFont', 'UIImage', 'UIImageView', 'UILabel', 'UIStackView', 'UITextField', 'Reactive']"
+
   - id: "STANDARD_PROTOCOL_REQUIREMENTS"
-    description: "Identifiable, LocalizedError 등 표준 프로토콜이 요구하는 프로퍼티"
+    description: "표준 프로토콜(예: LocalizedError)이 요구하는 프로퍼티"
     pattern:
       - find: { target: P }
       - where:
           - "P.kind == 'property'"
-          - "P.name in ['id', 'errorDescription', 'recoverySuggestion', 'description', 'debugDescription', 'rawValue', 'body']"
-  - id: "COMMON_CONVENTION_METHODS"
-    description: "UseCase, Manager 등에서 관례적으로 사용되는 핵심 메서드 이름"
-    pattern:
-      - find: { target: M }
-      - where:
-          - "M.kind == 'method'"
-          - "M.name in ['call', 'run', 'next', 'set', 'get', 'post', 'patch', 'delete', 'update', 'load', 'save', 'create', 'remove', 'insert', 'append']"
+          # ✨ LocalizedError 관련 프로퍼티 추가
+          - "P.name in ['id', 'errorDescription', 'recoverySuggestion', 'underlyingError']"
 
-  # =======================================================================
-  # 카테고리 6: 데이터 직렬화 및 모델 (🔥 수정됨)
-  # =======================================================================
-  - id: "CODABLE_WITHOUT_CODINGKEYS"
-    description: "CodingKeys가 없는 Codable 타입의 프로퍼티"
+  - id: "CODABLE_PROPERTIES"
+    description: "Codable을 준수하는 타입의 모든 프로퍼티"
     pattern:
       - find: { target: P }
       - where:
           - "P.kind == 'property'"
-          # [수정] 부모(parent)의 모든 조상(superclass) 중 Codable을 채택한 것이 있는지 검사
-          - "parent.superclass.name in ['Codable', 'Decodable', 'Encodable']"
-          - not_exists:
-              - "parent.child.name == 'CodingKeys'"
+          - "P.parent.typeInheritanceChain contains_any ['Codable', 'Decodable', 'Encodable']"
 
-  # =======================================================================
-  # 카테고리 7: 테스트 관련 심볼 (🔥 규칙 분리 및 강화)
-  # =======================================================================
-  - id: "TEST_CLASSES"
-    description: "XCTestCase를 상속하거나 이름에 'Tests'가 포함된 테스트 클래스"
-    pattern:
-      - find: { target: C }
-      - where:
-          - "C.kind == 'class'"
-          - "C.name contains 'Tests'"
-          - "C.superclass.name == 'XCTestCase'"
-
-  - id: "TEST_METHODS_BY_PREFIX"
-    description: "이름이 'test'로 시작하는 테스트 메서드"
-    pattern:
-      - find: { target: M }
-      - where:
-          - "M.kind == 'method'"
-          - "M.name starts_with 'test'"
-
-  - id: "TEST_LIFECYCLE_METHODS"
-    description: "setUp, tearDown 등 XCTest 생명주기 메서드"
-    pattern:
-      - find: { target: M }
-      - where:
-          - "M.kind == 'method'"
-          - "M.name in ['setUp', 'tearDown', 'setUpWithError', 'tearDownWithError']"
-          - "parent.superclass.name == 'XCTestCase'"
-
-  # =======================================================================
-  # 카테고리 8: 문맥 기반 일반 이름 (🔥 최종 강화)
-  # =======================================================================
-  - id: "COMMON_UI_PROPERTIES"
-    description: "UIViewController 또는 UIView 서브클래스 내의 일반적인 UI 관련 프로퍼티"
+  - id: "COMMON_CONVENTION_PROPERTIES"
+    description: "MVVM, RxSwift/Combine 등에서 관례적으로 사용되는 프로퍼티 이름"
     pattern:
       - find: { target: P }
       - where:
           - "P.kind == 'property'"
-          - "P.name in ['delegate', 'dataSource', 'title', 'view', 'window', 'tableView', 'collectionView', 'button', 'imageView', 'titleLabel', 'contentView', 'refreshControl', 'backgroundView', 'header', 'footer']"
-          # [수정] 부모(parent)의 모든 조상(superclass) 중 UIKit 핵심 클래스가 있는지 검사
-          - "parent.superclass.name in ['UIViewController', 'UIView', 'UIResponder', 'UITableViewCell', 'UICollectionViewCell', 'UICollectionReusableView']"
+          - "P.name in ['viewModel', 'disposeBag', 'reuseIdentifier', 'coordinator', 'repository', 'cancellable', 'semaphore', 'locationManager']"
+
+  - id: "VERY_COMMON_PROPERTY_NAMES"
+    description: "문맥에 상관없이 안전하게 제외해야 하는 매우 일반적인 프로퍼티 이름"
+    pattern:
+      - find: { target: P }
+      - where:
+          - "P.kind == 'property'"
+          # ✨ 마지막 누락분 추가
+          - "P.name in ['id', 'key', 'name', 'title', 'titleLabel', 'message', 'items', 'index', 'height', 'isSelected', 'attrString', 'paragraphStyle', 'placemark', 'rect', 'path', 'region', 'coordinate', 'placeholder', 'alert', 'view', 'button', 'imageView', 'contentView', 'tableView', 'window', 'barAppearance', 'maskLayer', 'appearance', 'collectionView', 'mapView', 'stackView', 'layout', 'refreshControl', 'colors', 'image', 'viewController', 'collectionViewLayout', 'setting']"
+
+  - id: "COMMON_METHOD_NAMES"
+    description: "관례적으로 사용되거나 재정의될 가능성이 높은 일반적인 메서드 이름"
+    pattern:
+      - find: { target: M }
+      - where:
+        - "M.kind == 'method'"
+        # ✨ 마지막 누락분 추가
+        - "M.name in ['run', 'set', 'get', 'add', 'remove', 'reset', 'clear', 'activate', 'apply', 'showAlert', 'save', 'next', 'cancelAction', 'deleteAllItems', 'resizableImage', 'rotate', 'getIsInBusiness', 'doneButton', 'call']"
+
+  # =======================================================================
+  # 카테고리 4: 핵심 언어 기능
+  # =======================================================================
+  - id: "INITIALIZERS_AND_OPERATORS"
+    description: "모든 생성자(init) 및 연산자(== 등)"
+    pattern:
+      - find: { target: S }
+      - where:
+          - "S.kind in ['initializer', 'operator']"

@@ -1,5 +1,5 @@
 import SwiftSyntax
-import SwiftParser  // 👈 이 import 추가!
+import SwiftParser
 import Foundation
 
 class SymbolVisitor: SyntaxVisitor {
@@ -27,6 +27,8 @@ class SymbolVisitor: SyntaxVisitor {
             column: location.column
         )
     }
+
+    // --- Main Declarations ---
 
     override func visit(_ node: ClassDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
@@ -70,9 +72,12 @@ class SymbolVisitor: SyntaxVisitor {
         _ = parentStack.popLast()
     }
 
+    // --- Member Declarations ---
+
     override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: node.name.text, kind: .method, decl: node)
+        let returnTypeName = node.signature.returnClause?.type.trimmedDescription
+        let symbol = createSymbol(id: id, name: node.name.text, kind: .method, decl: node, typeName: returnTypeName)
         symbols.append(symbol)
         handleContainment(childId: id)
 
@@ -86,7 +91,8 @@ class SymbolVisitor: SyntaxVisitor {
         for binding in node.bindings {
             if let pattern = binding.pattern.as(IdentifierPatternSyntax.self) {
                 let id = UUID().uuidString
-                let symbol = createSymbol(id: id, name: pattern.identifier.text, kind: .property, decl: node)
+                let typeName = binding.typeAnnotation?.type.trimmedDescription
+                let symbol = createSymbol(id: id, name: pattern.identifier.text, kind: .property, decl: node, typeName: typeName)
                 symbols.append(symbol)
                 handleContainment(childId: id)
             }
@@ -94,10 +100,37 @@ class SymbolVisitor: SyntaxVisitor {
         return .visitChildren
     }
 
+    override func visit(_ node: InitializerDeclSyntax) -> SyntaxVisitorContinueKind {
+        let id = UUID().uuidString
+        let symbol = createSymbol(id: id, name: "init", kind: .initializer, decl: node)
+        symbols.append(symbol)
+        handleContainment(childId: id)
+
+        if symbol.modifiers.contains("override") {
+            edges.append(SymbolEdge(from: id, to: "METHOD:init", type: .overrides))
+        }
+        return .visitChildren
+    }
+
+    override func visit(_ node: OperatorDeclSyntax) -> SyntaxVisitorContinueKind {
+        let id = UUID().uuidString
+        let symbol = createSymbol(id: id, name: node.name.text, kind: .operator, decl: node)
+        symbols.append(symbol)
+        handleContainment(childId: id)
+        return .visitChildren
+    }
+
+    override func visit(_ node: SubscriptDeclSyntax) -> SyntaxVisitorContinueKind {
+        let id = UUID().uuidString
+        let symbol = createSymbol(id: id, name: "subscript", kind: .subscript, decl: node)
+        symbols.append(symbol)
+        handleContainment(childId: id)
+        return .visitChildren
+    }
+
     // --- Helper Functions ---
 
-    private func createSymbol(id: String, name: String, kind: SymbolKind, decl: some DeclSyntaxProtocol) -> SymbolNode {
-        // attributes와 modifiers를 안전하게 추출
+    private func createSymbol(id: String, name: String, kind: SymbolKind, decl: some DeclSyntaxProtocol, typeName: String? = nil) -> SymbolNode {
         let attributes = extractAttributes(from: decl)
         let modifiers = extractModifiers(from: decl)
 
@@ -107,45 +140,22 @@ class SymbolVisitor: SyntaxVisitor {
             kind: kind,
             location: location(for: decl),
             attributes: attributes,
-            modifiers: modifiers
+            modifiers: modifiers,
+            typeName: typeName
         )
     }
 
     private func extractAttributes(from decl: some DeclSyntaxProtocol) -> [String] {
-        // DeclSyntaxProtocol은 attributes를 직접 제공하지 않으므로
-        // 구체 타입별로 처리
-        var attrs: [String] = []
-
-        if let classDecl = decl.as(ClassDeclSyntax.self) {
-            attrs = classDecl.attributes.map { $0.trimmedDescription }
-        } else if let structDecl = decl.as(StructDeclSyntax.self) {
-            attrs = structDecl.attributes.map { $0.trimmedDescription }
-        } else if let enumDecl = decl.as(EnumDeclSyntax.self) {
-            attrs = enumDecl.attributes.map { $0.trimmedDescription }
-        } else if let funcDecl = decl.as(FunctionDeclSyntax.self) {
-            attrs = funcDecl.attributes.map { $0.trimmedDescription }
-        } else if let varDecl = decl.as(VariableDeclSyntax.self) {
-            attrs = varDecl.attributes.map { $0.trimmedDescription }
-        }
-
-        return attrs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        // [🛠️ 수정] 'AttributedSyntax'를 'WithAttributesSyntax'로 변경하여 경고 해결
+        guard let attributedNode = decl as? any WithAttributesSyntax else { return [] }
+        return attributedNode.attributes.map { $0.trimmedDescription.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
     private func extractModifiers(from decl: some DeclSyntaxProtocol) -> [String] {
         var mods: [String] = []
-
-        if let classDecl = decl.as(ClassDeclSyntax.self) {
-            mods = classDecl.modifiers.map { $0.name.text }
-        } else if let structDecl = decl.as(StructDeclSyntax.self) {
-            mods = structDecl.modifiers.map { $0.name.text }
-        } else if let enumDecl = decl.as(EnumDeclSyntax.self) {
-            mods = enumDecl.modifiers.map { $0.name.text }
-        } else if let funcDecl = decl.as(FunctionDeclSyntax.self) {
-            mods = funcDecl.modifiers.map { $0.name.text }
-        } else if let varDecl = decl.as(VariableDeclSyntax.self) {
-            mods = varDecl.modifiers.map { $0.name.text }
+        if let modifiers = (decl as? any WithModifiersSyntax)?.modifiers {
+            mods = modifiers.map { $0.name.text }
         }
-
         return mods.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
@@ -159,7 +169,8 @@ class SymbolVisitor: SyntaxVisitor {
         guard let clause = clause else { return }
         for type in clause.inheritedTypes {
             let parentTypeName = type.type.trimmedDescription
-            let edge = SymbolEdge(from: id, to: "TYPE:\(parentTypeName)", type: .inheritsFrom)
+            let edgeType: EdgeType = .inheritsFrom
+            let edge = SymbolEdge(from: id, to: "TYPE:\(parentTypeName)", type: edgeType)
             edges.append(edge)
         }
     }

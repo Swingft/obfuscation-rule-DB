@@ -8,19 +8,17 @@ class GraphExtractor {
     private var externalExclusions = Set<String>()
 
     func extract(from projectURL: URL, externalExclusionsFile: String?) throws {
-        // 1. 외부 제외 목록 로드 (리소스, 헤더 등)
+        // 1. 외부 제외 목록 로드
         if let path = externalExclusionsFile {
             loadExternalExclusions(from: path)
         }
 
-        // 2. Plist 및 Storyboard/XIB 분석하여 클래스 이름 목록 확보
+        // 2. Plist 및 Storyboard 분석
         print("  - Analyzing Plist and Storyboard files...")
         let plistAnalyzer = PlistAnalyzer()
         let storyboardAnalyzer = StoryboardAnalyzer()
         let fileBasedExclusions = plistAnalyzer.analyze(projectURL: projectURL)
             .union(storyboardAnalyzer.analyze(projectURL: projectURL))
-
-        // 두 제외 목록을 합침
         self.externalExclusions.formUnion(fileBasedExclusions)
 
         // 3. Swift 소스 파일 분석
@@ -35,9 +33,9 @@ class GraphExtractor {
         for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
             let sourceText = try String(contentsOf: fileURL, encoding: .utf8)
             let visitor = SymbolVisitor(sourceText: sourceText, fileURL: fileURL)
-            visitor.walk(Parser.parse(source: sourceText))
+            let sourceTree = Parser.parse(source: sourceText)
+            visitor.walk(sourceTree)
 
-            // 심볼을 저장하면서 외부 참조 여부를 태그
             for var symbol in visitor.symbols {
                 if externalExclusions.contains(symbol.name) {
                     symbol.isReferencedByExternalFile = true
@@ -47,8 +45,8 @@ class GraphExtractor {
             visitor.edges.forEach { self.edges.insert($0) }
         }
 
-        // 4. 관계 해석 (상속, 오버라이드 등)
-        resolveEdgeReferences()
+        // 4. 관계 해석 및 상속 체인 빌드
+        resolveRelationships()
     }
 
     private func loadExternalExclusions(from path: String) {
@@ -64,66 +62,127 @@ class GraphExtractor {
         }
     }
 
-    private func resolveEdgeReferences() {
+    private func resolveRelationships() {
         print("  - Resolving symbol references...")
+
+        // 1단계: 모든 타입 이름에 대해 시스템 심볼 노드 생성 (정보 확장)
+        ensureSystemSymbolsExist()
+
+        // 2단계: 이름 기반 엣지를 ID 기반으로 해석
+        resolveNamedEdges()
+
+        // 3단계: 클래스 상속과 프로토콜 채택을 모두 포함하여 상속 체인 빌드
+        buildInheritanceAndConformanceChains()
+
+        // 4단계: 멤버들에게 상속 체인 정보 전파
+        propagateChainsToMembers()
+    }
+
+    // [✨ 추가] 모든 `typeName`을 분석하여 시스템 심볼을 미리 생성하는 함수
+    private func ensureSystemSymbolsExist() {
+        let allTypeNames = Set(symbols.values.compactMap { $0.typeName })
+        let symbolsByName = Dictionary(grouping: symbols.values, by: { $0.name })
+
+        for typeName in allTypeNames {
+            let cleanTypeName = typeName.trimmingCharacters(in: .punctuationCharacters)
+            if symbolsByName[cleanTypeName] == nil && symbols["system-\(cleanTypeName)"] == nil {
+                let systemId = "system-\(cleanTypeName)"
+                symbols[systemId] = SymbolNode(id: systemId, name: cleanTypeName, kind: .unknown, attributes: [], modifiers: [], isSystemSymbol: true)
+            }
+        }
+    }
+
+    private func resolveNamedEdges() {
         var finalEdges = Set<SymbolEdge>()
         let symbolsByName = Dictionary(grouping: symbols.values, by: { $0.name })
 
         for edge in edges {
-            if symbols[edge.to] != nil { // 이미 ID로 연결된 경우
+            if symbols[edge.to] != nil {
                 finalEdges.insert(edge)
                 continue
             }
 
+            let name: String
             if edge.to.hasPrefix("TYPE:") {
-                let name = String(edge.to.dropFirst(5))
-                if let target = symbolsByName[name]?.first { // 프로젝트 내부 타입
-                    finalEdges.insert(SymbolEdge(from: edge.from, to: target.id, type: edge.type))
-                } else { // 시스템 심볼로 간주
-                    let systemId = "system-type-\(name)"
-                    if symbols[systemId] == nil {
-                        symbols[systemId] = SymbolNode(id: systemId, name: name, kind: .unknown, attributes: [], modifiers: [], isSystemSymbol: true)
-                    }
-                    finalEdges.insert(SymbolEdge(from: edge.from, to: systemId, type: edge.type))
-                }
+                name = String(edge.to.dropFirst(5))
             } else if edge.to.hasPrefix("METHOD:") {
-                let name = String(edge.to.dropFirst(7))
-                if let parentMethodId = findParentMethod(childMethodId: edge.from, methodName: name) {
-                    finalEdges.insert(SymbolEdge(from: edge.from, to: parentMethodId, type: .overrides))
+                name = String(edge.to.dropFirst(7))
+            } else {
+                finalEdges.insert(edge)
+                continue
+            }
+
+            if let target = symbolsByName[name]?.first {
+                finalEdges.insert(SymbolEdge(from: edge.from, to: target.id, type: edge.type))
+            } else {
+                let systemId = "system-\(name)"
+                if symbols[systemId] == nil {
+                    symbols[systemId] = SymbolNode(id: systemId, name: name, kind: .unknown, attributes: [], modifiers: [], isSystemSymbol: true)
                 }
+                finalEdges.insert(SymbolEdge(from: edge.from, to: systemId, type: edge.type))
             }
         }
         self.edges = finalEdges
     }
 
-    private func findParentMethod(childMethodId: String, methodName: String) -> String? {
-        // [수정] 미사용 변수 경고를 해결하기 위해 'childMethod'를 '_'로 변경
-        guard let _ = symbols[childMethodId],
-              let classId = edges.first(where: { $0.to == childMethodId && $0.type == .contains })?.from else {
-            return nil
+    // [✨ 수정] 클래스 상속과 프로토콜 채택을 모두 처리하도록 이름과 로직 변경
+    private func buildInheritanceAndConformanceChains() {
+        var chainCache = [String: [String]]()
+
+        func getChain(for symbolId: String) -> [String] {
+            if let cached = chainCache[symbolId] {
+                return cached
+            }
+            guard let symbol = symbols[symbolId] else { return [] }
+
+            var chain = [String]()
+            // ✨ 클래스 상속과 프로토콜 채택 엣지를 모두 사용
+            let parentEdges = edges.filter { $0.from == symbolId && ($0.type == .inheritsFrom || $0.type == .conformsTo) }
+
+            for edge in parentEdges {
+                guard let parentSymbol = symbols[edge.to] else { continue }
+                chain.append(parentSymbol.name)
+                chain.append(contentsOf: getChain(for: parentSymbol.id))
+            }
+
+            let uniqueChain = Array(NSOrderedSet(array: chain)) as! [String]
+            chainCache[symbolId] = uniqueChain
+            return uniqueChain
         }
 
-        let inheritedTypeIds = edges.filter { $0.from == classId && $0.type == .inheritsFrom }.map { $0.to }
+        for id in symbols.keys {
+            let chain = getChain(for: id)
+            if !chain.isEmpty {
+                symbols[id]?.typeInheritanceChain = chain
+            }
+        }
+    }
 
-        for inheritedTypeId in inheritedTypeIds {
-            guard let inheritedType = symbols[inheritedTypeId] else { continue }
+    // [✨ 수정] 함수 이름 변경
+    private func propagateChainsToMembers() {
+        let parentChildEdges = edges.filter { $0.type == .contains }
+        let classLikeSymbols = symbols.values.filter { $0.kind == .class || $0.kind == .struct }
 
-            if inheritedType.isSystemSymbol {
-                let systemMethodId = "system-method-\(inheritedType.name)-\(methodName)"
-                if symbols[systemMethodId] == nil {
-                    let systemMethod = SymbolNode(id: systemMethodId, name: methodName, kind: .method, attributes: [], modifiers: [], isSystemSymbol: true)
-                    symbols[systemMethodId] = systemMethod
-                    edges.insert(SymbolEdge(from: inheritedTypeId, to: systemMethodId, type: .contains))
-                }
-                return systemMethodId
-            } else {
-                for edge in edges where edge.from == inheritedTypeId && edge.type == .contains {
-                    if let method = symbols[edge.to], method.name == methodName {
-                        return method.id
+        for symbol in classLikeSymbols {
+            guard let chain = symbol.typeInheritanceChain else { continue }
+
+            // BFS/DFS로 모든 자식 심볼을 순회하며 상속 체인 전파
+            var queue = [symbol.id]
+            var visited = Set<String>()
+
+            while !queue.isEmpty {
+                let currentId = queue.removeFirst()
+                if visited.contains(currentId) { continue }
+                visited.insert(currentId)
+
+                let childrenIds = parentChildEdges.filter { $0.from == currentId }.map { $0.to }
+                for childId in childrenIds {
+                    if symbols[childId]?.typeInheritanceChain == nil {
+                         symbols[childId]?.typeInheritanceChain = chain
                     }
+                    queue.append(childId)
                 }
             }
         }
-        return nil
     }
 }
