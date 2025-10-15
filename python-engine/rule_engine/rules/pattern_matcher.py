@@ -68,7 +68,7 @@ class PatternMatcher:
             return matching_ids
 
         prop_path = parts[0]  # S_METHOD.kind
-        operator = parts[1]  # ==, !=, in, contains_any
+        operator = parts[1]  # ==, !=, in, contains, contains_any
         value_str = ' '.join(parts[2:])  # 'method' 또는 ['a', 'b']
 
         if '.' not in prop_path:
@@ -110,13 +110,11 @@ class PatternMatcher:
         # 엣지 타입 추출: 'VAR --TYPE' -> TYPE
         edge_type = None
         if left.count('--') > 0:
-            # 'S_METHOD --OVERRIDES' 형태
             left_parts = left.rsplit('--', 1)
             if len(left_parts) == 2:
                 edge_type = left_parts[1].strip()
 
         if right.count('--') > 0:
-            # '--OVERRIDES-- PARENT' 형태
             right_parts = right.split('--', 1)
             if len(right_parts) == 2 and not edge_type:
                 edge_type = right_parts[0].strip()
@@ -137,14 +135,12 @@ class PatternMatcher:
             temp_ids = {node_id}
             all_match = True
 
-            # 모든 서브 조건을 만족하는지 확인
             for sub_cond in sub_conditions:
                 temp_ids = self._apply_single_condition(temp_ids, sub_cond)
                 if not temp_ids:
                     all_match = False
                     break
 
-            # 모든 조건을 만족하면 제외 대상
             if all_match and temp_ids:
                 invalid_ids.add(node_id)
 
@@ -154,61 +150,43 @@ class PatternMatcher:
         """문자열 값을 파싱"""
         value_str = value_str.strip()
 
-        # 따옴표 제거
         if (value_str.startswith('"') and value_str.endswith('"')) or \
                 (value_str.startswith("'") and value_str.endswith("'")):
             return value_str[1:-1]
 
-        # 리스트 파싱: ['a', 'b']
         if value_str.startswith('[') and value_str.endswith(']'):
             inner = value_str[1:-1]
-            if not inner.strip():
-                return []
-            items = []
-            for item in inner.split(','):
-                item = item.strip()
-                if (item.startswith('"') and item.endswith('"')) or \
-                        (item.startswith("'") and item.endswith("'")):
-                    items.append(item[1:-1])
-                else:
-                    items.append(item)
-            return items
+            if not inner.strip(): return []
+            return [self._parse_value(item) for item in inner.split(',')]
 
-        # 불리언
-        if value_str.lower() == 'true':
-            return True
-        if value_str.lower() == 'false':
-            return False
+        if value_str.lower() == 'true': return True
+        if value_str.lower() == 'false': return False
 
-        # 숫자
         try:
-            if '.' in value_str:
-                return float(value_str)
             return int(value_str)
         except ValueError:
-            pass
-
-        return value_str
+            try:
+                return float(value_str)
+            except ValueError:
+                return value_str
 
     def _check_value(self, prop_value: Any, operator: str, required_value: Any) -> bool:
-        """값 비교"""
+        """값 비교 (🔥 'contains' 연산자 추가)"""
         if prop_value is None:
-            return False
+            return operator == '!='
 
         if operator == '==':
             return prop_value == required_value
-
         if operator == '!=':
             return prop_value != required_value
-
         if operator == 'in':
-            if isinstance(required_value, list):
-                return prop_value in required_value
-            return False
+            return isinstance(required_value, list) and prop_value in required_value
+
+        # [수정] 문자열 포함 연산자 추가
+        if operator == 'contains':
+            return isinstance(prop_value, str) and isinstance(required_value, str) and required_value in prop_value
 
         if operator == 'contains_any':
             if isinstance(prop_value, list) and isinstance(required_value, list):
                 return any(item in prop_value for item in required_value)
-            return False
-
         return False
