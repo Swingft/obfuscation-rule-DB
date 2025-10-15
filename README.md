@@ -29,7 +29,7 @@
 ## 📂 프로젝트 구조
 
 프로젝트는 명확한 책임을 가진 개별 모듈로 구성되어 있습니다.
-
+``` 
 obfuscation-rule-DB/
 ├── 📂 output/
 │   ├── external_exclusions.txt      # (1단계 결과물) Swift 외 파일에서 추출된 식별자
@@ -55,7 +55,7 @@ obfuscation-rule-DB/
 └── 📂 swift-extractor/
 ├── Sources/                     # Swift 심볼 그래프 생성기 소스 코드
 └── Package.swift                # Swift 패키지 의존성
-
+``` 
 
 ---
 
