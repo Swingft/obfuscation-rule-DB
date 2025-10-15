@@ -17,3 +17,4 @@ backup/resource/
 rule_output/
 rule_base/
 backup/process_rules.py
+python-engine/rule_engine/core/__pycache__/
