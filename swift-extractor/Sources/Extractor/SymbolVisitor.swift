@@ -10,6 +10,9 @@ class SymbolVisitor: SyntaxVisitor {
     private let fileURL: URL
     private var parentStack = [String]()
 
+    // ✅ 추가: 부모 정보를 추적하기 위한 구조체
+    private var parentInfoStack: [(id: String, name: String, kind: SymbolKind)] = []
+
     init(sourceText: String, fileURL: URL) {
         self.sourceLocationConverter = SourceLocationConverter(
             fileName: fileURL.path,
@@ -32,44 +35,75 @@ class SymbolVisitor: SyntaxVisitor {
 
     override func visit(_ node: ClassDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: node.name.text, kind: .class, decl: node)
+        var symbol = createSymbol(id: id, name: node.name.text, kind: .class, decl: node)
+
+        // ✅ 부모 정보 추가
+        if let parentInfo = parentInfoStack.last {
+            symbol.parentId = parentInfo.id
+            symbol.parentName = parentInfo.name
+        }
+
         symbols.append(symbol)
         handleInheritance(for: id, from: node.inheritanceClause)
         handleContainment(childId: id)
+
         parentStack.append(id)
+        parentInfoStack.append((id: id, name: node.name.text, kind: .class))
+
         return .visitChildren
     }
 
     override func visitPost(_ node: ClassDeclSyntax) {
         _ = parentStack.popLast()
+        _ = parentInfoStack.popLast()
     }
 
     override func visit(_ node: StructDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: node.name.text, kind: .struct, decl: node)
+        var symbol = createSymbol(id: id, name: node.name.text, kind: .struct, decl: node)
+
+        if let parentInfo = parentInfoStack.last {
+            symbol.parentId = parentInfo.id
+            symbol.parentName = parentInfo.name
+        }
+
         symbols.append(symbol)
         handleInheritance(for: id, from: node.inheritanceClause)
         handleContainment(childId: id)
+
         parentStack.append(id)
+        parentInfoStack.append((id: id, name: node.name.text, kind: .struct))
+
         return .visitChildren
     }
 
     override func visitPost(_ node: StructDeclSyntax) {
         _ = parentStack.popLast()
+        _ = parentInfoStack.popLast()
     }
 
     override func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: node.name.text, kind: .enum, decl: node)
+        var symbol = createSymbol(id: id, name: node.name.text, kind: .enum, decl: node)
+
+        if let parentInfo = parentInfoStack.last {
+            symbol.parentId = parentInfo.id
+            symbol.parentName = parentInfo.name
+        }
+
         symbols.append(symbol)
         handleInheritance(for: id, from: node.inheritanceClause)
         handleContainment(childId: id)
+
         parentStack.append(id)
+        parentInfoStack.append((id: id, name: node.name.text, kind: .enum))
+
         return .visitChildren
     }
 
     override func visitPost(_ node: EnumDeclSyntax) {
         _ = parentStack.popLast()
+        _ = parentInfoStack.popLast()
     }
 
     // --- Member Declarations ---
@@ -77,7 +111,14 @@ class SymbolVisitor: SyntaxVisitor {
     override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
         let returnTypeName = node.signature.returnClause?.type.trimmedDescription
-        let symbol = createSymbol(id: id, name: node.name.text, kind: .method, decl: node, typeName: returnTypeName)
+        var symbol = createSymbol(id: id, name: node.name.text, kind: .method, decl: node, typeName: returnTypeName)
+
+        // ✅ 부모 정보 추가
+        if let parentInfo = parentInfoStack.last {
+            symbol.parentId = parentInfo.id
+            symbol.parentName = parentInfo.name
+        }
+
         symbols.append(symbol)
         handleContainment(childId: id)
 
@@ -92,7 +133,14 @@ class SymbolVisitor: SyntaxVisitor {
             if let pattern = binding.pattern.as(IdentifierPatternSyntax.self) {
                 let id = UUID().uuidString
                 let typeName = binding.typeAnnotation?.type.trimmedDescription
-                let symbol = createSymbol(id: id, name: pattern.identifier.text, kind: .property, decl: node, typeName: typeName)
+                var symbol = createSymbol(id: id, name: pattern.identifier.text, kind: .property, decl: node, typeName: typeName)
+
+                // ✅ 부모 정보 추가
+                if let parentInfo = parentInfoStack.last {
+                    symbol.parentId = parentInfo.id
+                    symbol.parentName = parentInfo.name
+                }
+
                 symbols.append(symbol)
                 handleContainment(childId: id)
             }
@@ -102,7 +150,13 @@ class SymbolVisitor: SyntaxVisitor {
 
     override func visit(_ node: InitializerDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: "init", kind: .initializer, decl: node)
+        var symbol = createSymbol(id: id, name: "init", kind: .initializer, decl: node)
+
+        if let parentInfo = parentInfoStack.last {
+            symbol.parentId = parentInfo.id
+            symbol.parentName = parentInfo.name
+        }
+
         symbols.append(symbol)
         handleContainment(childId: id)
 
@@ -122,9 +176,39 @@ class SymbolVisitor: SyntaxVisitor {
 
     override func visit(_ node: SubscriptDeclSyntax) -> SyntaxVisitorContinueKind {
         let id = UUID().uuidString
-        let symbol = createSymbol(id: id, name: "subscript", kind: .subscript, decl: node)
+        var symbol = createSymbol(id: id, name: "subscript", kind: .subscript, decl: node)
+
+        if let parentInfo = parentInfoStack.last {
+            symbol.parentId = parentInfo.id
+            symbol.parentName = parentInfo.name
+        }
+
         symbols.append(symbol)
         handleContainment(childId: id)
+        return .visitChildren
+    }
+
+    // ✅ 추가: Enum Case 처리
+    override func visit(_ node: EnumCaseDeclSyntax) -> SyntaxVisitorContinueKind {
+        for element in node.elements {
+            let id = UUID().uuidString
+            var symbol = SymbolNode(
+                id: id,
+                name: element.name.text,
+                kind: .enumCase,
+                location: location(for: element),
+                attributes: [],
+                modifiers: []
+            )
+
+            if let parentInfo = parentInfoStack.last {
+                symbol.parentId = parentInfo.id
+                symbol.parentName = parentInfo.name
+            }
+
+            symbols.append(symbol)
+            handleContainment(childId: id)
+        }
         return .visitChildren
     }
 
@@ -146,7 +230,6 @@ class SymbolVisitor: SyntaxVisitor {
     }
 
     private func extractAttributes(from decl: some DeclSyntaxProtocol) -> [String] {
-        // [🛠️ 수정] 'AttributedSyntax'를 'WithAttributesSyntax'로 변경하여 경고 해결
         guard let attributedNode = decl as? any WithAttributesSyntax else { return [] }
         return attributedNode.attributes.map { $0.trimmedDescription.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
@@ -169,8 +252,8 @@ class SymbolVisitor: SyntaxVisitor {
         guard let clause = clause else { return }
         for type in clause.inheritedTypes {
             let parentTypeName = type.type.trimmedDescription
-            let edgeType: EdgeType = .inheritsFrom
-            let edge = SymbolEdge(from: id, to: "TYPE:\(parentTypeName)", type: edgeType)
+            // ✅ 모두 INHERITS_FROM으로 통일 (프로토콜도 포함)
+            let edge = SymbolEdge(from: id, to: "TYPE:\(parentTypeName)", type: .inheritsFrom)
             edges.append(edge)
         }
     }

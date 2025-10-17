@@ -8,12 +8,12 @@ chmod +x run_analysis.sh
 # --- 분석할 프로젝트 쌍 목록 ---
 # 형식: "프로젝트_폴더_이름 정답_파일.txt"
 PROJECTS=(
-#    "test_project4 life.txt"
-#    "test_project5 nextlevel.txt"
-#    "test_project6 sample.txt"
-#    "test_project7 social.txt"
-#    "test_project8 uikit1.txt"
-    "test_project9 uikit2.txt"
+#    "test_project4/Life-Progress-iOS life.txt"
+#    "test_project5/NextLevel nextlevel.txt"
+#    "test_project6/sample-food-truck sample.txt"
+    "test_project7/social-distancing-ios social.txt"
+#    "test_project8/UIKit+SPM_1 uikit1.txt"
+#    "test_project9/UIKit+SPM_2 uikit2.txt"
 )
 
 # --- 루프를 돌며 각 프로젝트 분석 실행 ---

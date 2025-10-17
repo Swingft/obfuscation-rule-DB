@@ -3,7 +3,7 @@ from ..graph.graph_loader import SymbolGraph
 
 
 class PatternMatcher:
-    """Matches patterns from rules against the symbol graph. (Final Version)"""
+    """Matches patterns from rules against the symbol graph. (Improved Version)"""
 
     def __init__(self, graph: SymbolGraph):
         self.graph = graph
@@ -51,10 +51,61 @@ class PatternMatcher:
         if len(path_components) < 1:
             return matching_ids
 
-        # Correctly separate traversal path from the final property to check
         variable_name = path_components[0]
-        traversal_path = path_components[1:-1]
-        target_prop = path_components[-1]
+
+        # ✅ 특별 처리: P.parent.typeInheritanceChain 패턴
+        if variable_name in ['P', 'M', 'S', 'E', 'C'] and len(path_components) == 3 and path_components[1] == 'parent':
+            # 예: P.parent.typeInheritanceChain contains_any ['Codable']
+            target_prop = path_components[2]
+
+            for node_id in current_ids:
+                node = self.graph.get_node(node_id)
+                if not node:
+                    continue
+
+                # parentId로 부모 찾기
+                parent_id = node.get('parentId')
+                if not parent_id:
+                    continue
+
+                parent_node = self.graph.get_node(parent_id)
+                if not parent_node:
+                    continue
+
+                prop_value = parent_node.get(target_prop)
+                if self._check_value(prop_value, operator, value):
+                    matching_ids.add(node_id)
+
+            return matching_ids
+
+        # parent를 직접 속성으로 사용하는 경우
+        if variable_name == 'parent' and len(path_components) >= 2:
+            # 예: parent.name == "SomeClass"
+            target_prop = path_components[1]
+
+            for node_id in current_ids:
+                node = self.graph.get_node(node_id)
+                if not node:
+                    continue
+
+                # parentId를 통해 부모 노드 찾기
+                parent_id = node.get('parentId')
+                if not parent_id:
+                    continue
+
+                parent_node = self.graph.get_node(parent_id)
+                if not parent_node:
+                    continue
+
+                prop_value = parent_node.get(target_prop)
+                if self._check_value(prop_value, operator, value):
+                    matching_ids.add(node_id)
+
+            return matching_ids
+
+        # 기존 로직: 일반 속성 경로 처리
+        traversal_path = path_components[1:-1] if len(path_components) > 1 else []
+        target_prop = path_components[-1] if len(path_components) > 0 else None
 
         for node_id in current_ids:
             nodes_to_check_ids = {node_id}
@@ -139,10 +190,11 @@ class PatternMatcher:
     def _parse_value(self, value_str: str) -> Any:
         value_str = value_str.strip()
         if (value_str.startswith('"') and value_str.endswith('"')) or \
-                (value_str.startswith("'") and value_str.endswith("'")): return value_str[1:-1]
+                (value_str.startswith("'") and value_str.endswith("'")):
+            return value_str[1:-1]
         if value_str.startswith('[') and value_str.endswith(']'):
             inner = value_str[1:-1].strip()
-            return [self._parse_value(item) for item in inner.split(',')] if inner else []
+            return [self._parse_value(item.strip()) for item in inner.split(',')] if inner else []
         if value_str.lower() == 'true': return True
         if value_str.lower() == 'false': return False
         try:
@@ -158,12 +210,11 @@ class PatternMatcher:
         if operator == '==': return prop_value == required_value
         if operator == '!=': return prop_value != required_value
         if operator == 'in': return isinstance(required_value, list) and prop_value in required_value
-        if operator == 'contains': return isinstance(prop_value, str) and isinstance(required_value,
-                                                                                     str) and required_value in prop_value
+        if operator == 'contains':
+            return isinstance(prop_value, str) and isinstance(required_value, str) and required_value in prop_value
         if operator == 'contains_any':
             if isinstance(prop_value, list) and isinstance(required_value, list):
                 return any(item in prop_value for item in required_value)
         if operator == 'starts_with':
             return isinstance(prop_value, str) and prop_value.startswith(required_value)
         return False
-

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Objective-C 헤더 식별자 추출기 (완벽 최종판)
+Objective-C 헤더 식별자 추출기 (개선된 최종판 + SPM 지원)
 
 공개 API (난독화 제외 대상) 식별자를 100% 정확하게 추출합니다.
+프로젝트 내부 + DerivedData의 SPM 패키지 헤더도 스캔합니다.
 """
 
 import re
 import json
 import argparse
+import glob
 from pathlib import Path
 from typing import Set, Dict, List
 from collections import defaultdict
@@ -363,11 +365,14 @@ class ObjCHeaderParser:
 
 
 class HeaderScanner:
-    def __init__(self, project_path: Path, exclude_dirs: List[str] = None):
+    def __init__(self, project_path: Path, exclude_dirs: List[str] = None, scan_spm: bool = True,
+                 real_project_name: str = None):
         self.project_path = Path(project_path)
         self.exclude_dirs = exclude_dirs or [
-            '.build', 'build', 'DerivedData', '.git', 'node_modules',
+            '.build', 'build', '.git', 'node_modules',
         ]
+        self.scan_spm = scan_spm
+        self.real_project_name = real_project_name
         self.header_results = {}
         self.stats = defaultdict(int)
 
@@ -380,6 +385,7 @@ class HeaderScanner:
         return False
 
     def find_header_files(self) -> List[Path]:
+        """프로젝트 내부 헤더 파일 찾기"""
         header_files = []
 
         def scan_directory(directory: Path):
@@ -396,23 +402,103 @@ class HeaderScanner:
         scan_directory(self.project_path)
         return header_files
 
+    def find_spm_headers(self) -> List[Path]:
+        """✅ 개선: DerivedData의 SPM 패키지 헤더 찾기 (더 정확하고 안전하게)"""
+        spm_headers = []
+
+        # DerivedData 기본 경로
+        derived_data_base = Path.home() / "Library" / "Developer" / "Xcode" / "DerivedData"
+
+        if not derived_data_base.exists():
+            print(f"   ⚠️  DerivedData 폴더가 존재하지 않습니다: {derived_data_base}")
+            return spm_headers
+
+        # 1. 실제 프로젝트 이름이 제공된 경우
+        if self.real_project_name:
+            project_name = self.real_project_name
+            print(f"   -> 실제 프로젝트 이름 '{project_name}'을(를) 사용하여 DerivedData 검색")
+        else:
+            # 2. 프로젝트 경로에서 추측
+            project_name = self.project_path.name
+            if project_name.endswith('.xcodeproj'):
+                project_name = project_name[:-10]
+            print(f"   -> 폴더 이름 '{project_name}'을(를) 기준으로 DerivedData 검색 (추측)")
+
+        # 프로젝트 이름으로 시작하는 DerivedData 폴더 찾기
+        pattern = f"{project_name}-*"
+        matching_dirs = list(derived_data_base.glob(pattern))
+
+        if not matching_dirs:
+            print(f"   ⚠️  DerivedData에서 '{pattern}' 패턴의 폴더를 찾을 수 없습니다.")
+            print(f"   💡 힌트: DerivedData에 있는 폴더 목록:")
+            try:
+                for d in sorted(derived_data_base.iterdir())[:5]:
+                    if d.is_dir():
+                        print(f"      - {d.name}")
+            except:
+                pass
+            return spm_headers
+
+        print(f"\n📦 SPM 패키지 헤더 스캔 중...")
+
+        for derived_dir in matching_dirs:
+            # ✅ 수정: 경로 오타 수정 (SourPackages → SourcePackages)
+            checkouts_path = derived_dir / "SourcePackages" / "checkouts"
+
+            if not checkouts_path.exists():
+                print(f"   ⚠️  SPM checkouts 폴더가 없습니다: {checkouts_path}")
+                continue
+
+            print(f"   - 스캔: {checkouts_path}")
+
+            # checkouts 폴더 내의 모든 .h 파일 재귀적으로 찾기
+            for header_file in checkouts_path.rglob("*.h"):
+                spm_headers.append(header_file)
+
+        if spm_headers:
+            print(f"   ✓ {len(spm_headers)}개의 SPM 헤더 발견")
+        else:
+            print(f"   ⚠️  SPM 헤더를 찾지 못했습니다.")
+
+        return spm_headers
+
     def scan_all(self) -> Dict[str, Dict[str, Set[str]]]:
         print(f"🔍 프로젝트: {self.project_path}")
         print(f"📂 헤더 파일 검색 중...\n")
 
+        # 1. 프로젝트 내부 헤더
         header_files = self.find_header_files()
-        self.stats['total_headers'] = len(header_files)
+        self.stats['project_headers'] = len(header_files)
 
-        if not header_files:
+        # 2. SPM 패키지 헤더
+        spm_headers = []
+        if self.scan_spm:
+            spm_headers = self.find_spm_headers()
+            self.stats['spm_headers'] = len(spm_headers)
+
+        # 전체 헤더 목록
+        all_headers = header_files + spm_headers
+        self.stats['total_headers'] = len(all_headers)
+
+        if not all_headers:
             print("❌ 헤더 파일을 찾을 수 없습니다.")
             return {}
 
-        print(f"✓ {len(header_files)}개의 헤더 파일 발견\n")
-        print("📝 식별자 추출 중...")
+        print(f"\n✓ 총 {len(all_headers)}개의 헤더 파일 발견")
+        print(f"  - 프로젝트 내부: {len(header_files)}개")
+        if self.scan_spm:
+            print(f"  - SPM 패키지: {len(spm_headers)}개")
+
+        print("\n🔍 식별자 추출 중...")
         print("-" * 60)
 
-        for header_file in header_files:
-            relative_path = str(header_file.relative_to(self.project_path))
+        for header_file in all_headers:
+            try:
+                relative_path = str(header_file.relative_to(self.project_path))
+            except ValueError:
+                # SPM 헤더는 상대 경로 불가능
+                relative_path = f"[SPM] {header_file.name}"
+
             identifiers_by_type = ObjCHeaderParser.parse(header_file)
             total_count = sum(len(ids) for ids in identifiers_by_type.values())
 
@@ -443,6 +529,9 @@ class HeaderScanner:
         print("\n" + "=" * 60)
         print("📊 추출 결과 요약 (난독화 제외 대상)")
         print("=" * 60)
+        print(f"프로젝트 헤더:    {self.stats.get('project_headers', 0):>6}개")
+        if self.scan_spm:
+            print(f"SPM 헤더:         {self.stats.get('spm_headers', 0):>6}개")
         print(f"총 헤더 파일:     {self.stats['total_headers']:>6}개")
         print(f"성공:            {self.stats['success']:>6}개")
         print(f"실패:            {self.stats['failed']:>6}개")
@@ -460,7 +549,9 @@ class HeaderScanner:
     def save_to_json(self, output_path: Path, include_per_header: bool = True):
         output_data = {
             "project_path": str(self.project_path),
-            "description": "난독화에서 제외해야 할 공개 API 식별자 목록",
+            "description": "난독화에서 제외해야 할 공개 API 식별자 목록 (프로젝트 + SPM)",
+            "project_headers": self.stats.get('project_headers', 0),
+            "spm_headers": self.stats.get('spm_headers', 0),
             "total_headers": self.stats['total_headers'],
             "success": self.stats['success'],
             "failed": self.stats['failed'],
@@ -502,7 +593,7 @@ class HeaderScanner:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Objective-C 헤더에서 공개 API 식별자를 추출합니다 (난독화 제외 대상)",
+        description="Objective-C 헤더에서 공개 API 식별자를 추출합니다 (프로젝트 + SPM 패키지)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -511,6 +602,8 @@ def main():
     parser.add_argument('--txt', type=Path, help='TXT 파일 경로')
     parser.add_argument('--exclude', nargs='+', help='제외할 디렉토리')
     parser.add_argument('--no-per-header', action='store_true', help='헤더별 상세 정보 제외')
+    parser.add_argument('--no-spm', action='store_true', help='SPM 패키지 스캔 비활성화')
+    parser.add_argument('--real-project-name', type=str, help='빌드 시 확인된 실제 프로젝트 이름 (DerivedData 검색용)')
 
     args = parser.parse_args()
 
@@ -524,15 +617,20 @@ def main():
 
     exclude_dirs = None
     if args.exclude:
-        default_exclude = ['.build', 'build', 'DerivedData', '.git', 'node_modules']
+        default_exclude = ['.build', 'build', '.git', 'node_modules']
         exclude_dirs = default_exclude + args.exclude
 
     print("🚀 Objective-C 헤더 식별자 추출기")
-    print("   (난독화 제외 대상 - 공개 API)")
+    print("   (난독화 제외 대상 - 공개 API + SPM 패키지)")
     print("=" * 60)
     print()
 
-    scanner = HeaderScanner(args.project_path, exclude_dirs)
+    scanner = HeaderScanner(
+        args.project_path,
+        exclude_dirs,
+        scan_spm=not args.no_spm,
+        real_project_name=args.real_project_name
+    )
     scanner.scan_all()
     scanner.print_summary()
 
@@ -544,6 +642,8 @@ def main():
 
     print("\n✅ 완료!")
     print("💡 이 식별자들은 공개 API이므로 난독화에서 제외해야 합니다.")
+    if not args.no_spm:
+        print("💡 SPM 패키지의 헤더도 스캔되었습니다.")
     return 0
 
 

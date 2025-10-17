@@ -7,13 +7,58 @@ class GraphExtractor {
     private(set) var edges = Set<SymbolEdge>()
     private var externalExclusions = Set<String>()
 
+    // ✅ 진짜 시스템 타입만 포함 (Foundation/UIKit/Swift 표준)
+    private let knownSystemTypes: Set<String> = [
+        // Swift Standard Library
+        "String", "Int", "Double", "Float", "Bool", "Character",
+        "Array", "Dictionary", "Set", "Optional",
+        "Range", "ClosedRange", "PartialRangeFrom", "PartialRangeUpTo",
+        "Sequence", "Collection", "RandomAccessCollection",
+        "Error", "Result", "Never",
+        "Equatable", "Hashable", "Comparable", "Codable", "Decodable", "Encodable",
+        "CodingKey", "CaseIterable", "RawRepresentable",
+
+        // Foundation
+        "Date", "Data", "URL", "URLRequest", "URLSession", "URLComponents",
+        "FileManager", "DateFormatter", "NumberFormatter", "Locale",
+        "Calendar", "TimeZone", "Timer", "Process",
+        "NSObject", "NSCoder", "NSCoding", "NSSecureCoding",
+        "Notification", "NotificationCenter",
+        "UserDefaults", "Bundle", "ProcessInfo", "UUID",
+        "Notification.Name",
+
+        // UIKit/AppKit
+        "UIView", "UIViewController", "UINavigationController", "UITabBarController",
+        "UITableView", "UITableViewCell", "UICollectionView", "UICollectionViewCell",
+        "UIButton", "UILabel", "UIImageView", "UITextField", "UITextView",
+        "UIScrollView", "UIStackView", "UIImage", "UIColor", "UIFont",
+        "UIResponder", "UIGestureRecognizer", "UIControl",
+        "UICollectionReusableView", "UICollectionViewLayout",
+        "UICollectionViewFlowLayout", "UITableViewController",
+
+        // CoreGraphics
+        "CGFloat", "CGPoint", "CGSize", "CGRect", "CGAffineTransform",
+        "CGColor", "CGImage", "CGContext",
+
+        // MapKit
+        "MKMapView", "MKAnnotation", "MKAnnotationView",
+
+        // SwiftUI (기본 타입만)
+        "View", "ViewModifier", "PreferenceKey", "EnvironmentKey",
+
+        // Combine
+        "Publisher", "Subscriber", "Cancellable", "AnyCancellable",
+        "Subject", "PassthroughSubject", "CurrentValueSubject",
+
+        // RxSwift/ReactiveSwift (외부지만 널리 쓰임)
+        "Observable", "Reactive", "Observer"
+    ]
+
     func extract(from projectURL: URL, externalExclusionsFile: String?) throws {
-        // 1. 외부 제외 목록 로드
         if let path = externalExclusionsFile {
             loadExternalExclusions(from: path)
         }
 
-        // 2. Plist 및 Storyboard 분석
         print("  - Analyzing Plist and Storyboard files...")
         let plistAnalyzer = PlistAnalyzer()
         let storyboardAnalyzer = StoryboardAnalyzer()
@@ -21,7 +66,6 @@ class GraphExtractor {
             .union(storyboardAnalyzer.analyze(projectURL: projectURL))
         self.externalExclusions.formUnion(fileBasedExclusions)
 
-        // 3. Swift 소스 파일 분석
         print("  - Analyzing Swift source files...")
         let fileManager = FileManager.default
         let enumerator = fileManager.enumerator(
@@ -45,7 +89,6 @@ class GraphExtractor {
             visitor.edges.forEach { self.edges.insert($0) }
         }
 
-        // 4. 관계 해석 및 상속 체인 빌드
         resolveRelationships()
     }
 
@@ -64,32 +107,90 @@ class GraphExtractor {
 
     private func resolveRelationships() {
         print("  - Resolving symbol references...")
-
-        // 1단계: 모든 타입 이름에 대해 시스템 심볼 노드 생성 (정보 확장)
         ensureSystemSymbolsExist()
-
-        // 2단계: 이름 기반 엣지를 ID 기반으로 해석
         resolveNamedEdges()
-
-        // 3단계: 클래스 상속과 프로토콜 채택을 모두 포함하여 상속 체인 빌드
         buildInheritanceAndConformanceChains()
-
-        // 4단계: 멤버들에게 상속 체인 정보 전파
         propagateChainsToMembers()
     }
 
-    // [✨ 추가] 모든 `typeName`을 분석하여 시스템 심볼을 미리 생성하는 함수
+    // ✅ 대폭 개선: 제네릭 타입명 파싱 및 시스템 타입만 필터링
     private func ensureSystemSymbolsExist() {
-        let allTypeNames = Set(symbols.values.compactMap { $0.typeName })
-        let symbolsByName = Dictionary(grouping: symbols.values, by: { $0.name })
+        var typeNamesToProcess = Set<String>()
 
-        for typeName in allTypeNames {
-            let cleanTypeName = typeName.trimmingCharacters(in: .punctuationCharacters)
-            if symbolsByName[cleanTypeName] == nil && symbols["system-\(cleanTypeName)"] == nil {
-                let systemId = "system-\(cleanTypeName)"
-                symbols[systemId] = SymbolNode(id: systemId, name: cleanTypeName, kind: .unknown, attributes: [], modifiers: [], isSystemSymbol: true)
+        // 1. typeName에서 기본 타입만 추출
+        for symbol in symbols.values {
+            if let typeName = symbol.typeName {
+                typeNamesToProcess.formUnion(extractBaseTypes(from: typeName))
             }
         }
+
+        // 2. 상속/프로토콜에서 추출
+        let inheritanceTypeNames = edges
+            .filter { $0.type == .inheritsFrom || $0.type == .conformsTo }
+            .compactMap { edge -> String? in
+                guard edge.to.hasPrefix("TYPE:") else { return nil }
+                return String(edge.to.dropFirst(5))
+            }
+
+        typeNamesToProcess.formUnion(inheritanceTypeNames)
+
+        // 3. knownSystemTypes만 추가
+        let symbolsByName = Dictionary(grouping: symbols.values, by: { $0.name })
+
+        for typeName in typeNamesToProcess {
+            let cleanName = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // ✅ 핵심: knownSystemTypes에 있는 것만 시스템 심볼로 생성
+            guard knownSystemTypes.contains(cleanName) else { continue }
+            guard !cleanName.isEmpty else { continue }
+
+            if symbolsByName[cleanName] != nil || symbols["system-\(cleanName)"] != nil {
+                continue
+            }
+
+            let systemId = "system-\(cleanName)"
+            symbols[systemId] = SymbolNode(
+                id: systemId,
+                name: cleanName,
+                kind: .unknown,
+                attributes: [],
+                modifiers: [],
+                isSystemSymbol: true
+            )
+        }
+    }
+
+    // ✅ 새로운 함수: 제네릭 타입에서 기본 타입만 추출
+    private func extractBaseTypes(from typeName: String) -> Set<String> {
+        var baseTypes = Set<String>()
+
+        // 제네릭 꺾쇠 제거: "AnyPublisher<String, Never>" -> "AnyPublisher", "String", "Never"
+        let cleanedTypeName = typeName
+            .replacingOccurrences(of: "<", with: ",")
+            .replacingOccurrences(of: ">", with: ",")
+            .replacingOccurrences(of: "?", with: ",")
+            .replacingOccurrences(of: "!", with: ",")
+            .replacingOccurrences(of: "[", with: ",")
+            .replacingOccurrences(of: "]", with: ",")
+            .replacingOccurrences(of: "(", with: ",")
+            .replacingOccurrences(of: ")", with: ",")
+
+        let components = cleanedTypeName.split(separator: ",")
+
+        for component in components {
+            let trimmed = component
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: .punctuationCharacters)
+
+            guard !trimmed.isEmpty else { continue }
+
+            // 네임스페이스 제거: "FlipMate.Category" -> "Category"
+            let finalName = trimmed.split(separator: ".").last.map(String.init) ?? trimmed
+
+            baseTypes.insert(finalName)
+        }
+
+        return baseTypes
     }
 
     private func resolveNamedEdges() {
@@ -115,17 +216,26 @@ class GraphExtractor {
             if let target = symbolsByName[name]?.first {
                 finalEdges.insert(SymbolEdge(from: edge.from, to: target.id, type: edge.type))
             } else {
-                let systemId = "system-\(name)"
-                if symbols[systemId] == nil {
-                    symbols[systemId] = SymbolNode(id: systemId, name: name, kind: .unknown, attributes: [], modifiers: [], isSystemSymbol: true)
+                // ✅ knownSystemTypes에 있을 때만 시스템 심볼 생성
+                if knownSystemTypes.contains(name) {
+                    let systemId = "system-\(name)"
+                    if symbols[systemId] == nil {
+                        symbols[systemId] = SymbolNode(
+                            id: systemId,
+                            name: name,
+                            kind: .unknown,
+                            attributes: [],
+                            modifiers: [],
+                            isSystemSymbol: true
+                        )
+                    }
+                    finalEdges.insert(SymbolEdge(from: edge.from, to: systemId, type: edge.type))
                 }
-                finalEdges.insert(SymbolEdge(from: edge.from, to: systemId, type: edge.type))
             }
         }
         self.edges = finalEdges
     }
 
-    // [✨ 수정] 클래스 상속과 프로토콜 채택을 모두 처리하도록 이름과 로직 변경
     private func buildInheritanceAndConformanceChains() {
         var chainCache = [String: [String]]()
 
@@ -133,11 +243,12 @@ class GraphExtractor {
             if let cached = chainCache[symbolId] {
                 return cached
             }
-            guard let symbol = symbols[symbolId] else { return [] }
+            guard symbols[symbolId] != nil else { return [] }
 
             var chain = [String]()
-            // ✨ 클래스 상속과 프로토콜 채택 엣지를 모두 사용
-            let parentEdges = edges.filter { $0.from == symbolId && ($0.type == .inheritsFrom || $0.type == .conformsTo) }
+            let parentEdges = edges.filter {
+                $0.from == symbolId && ($0.type == .inheritsFrom || $0.type == .conformsTo)
+            }
 
             for edge in parentEdges {
                 guard let parentSymbol = symbols[edge.to] else { continue }
@@ -158,15 +269,15 @@ class GraphExtractor {
         }
     }
 
-    // [✨ 수정] 함수 이름 변경
     private func propagateChainsToMembers() {
         let parentChildEdges = edges.filter { $0.type == .contains }
-        let classLikeSymbols = symbols.values.filter { $0.kind == .class || $0.kind == .struct }
+        let classLikeSymbols = symbols.values.filter {
+            $0.kind == .class || $0.kind == .struct
+        }
 
         for symbol in classLikeSymbols {
             guard let chain = symbol.typeInheritanceChain else { continue }
 
-            // BFS/DFS로 모든 자식 심볼을 순회하며 상속 체인 전파
             var queue = [symbol.id]
             var visited = Set<String>()
 

@@ -20,7 +20,11 @@ struct SymbolNode: Codable, Hashable, Identifiable {
     var modifiers: [String]
     var typeName: String?
 
-    // [✨ 추가] 부모 클래스의 전체 상속 체인을 저장
+    // ✅ 추가: 부모 정보
+    var parentId: String?
+    var parentName: String?
+
+    // 상속 체인
     var typeInheritanceChain: [String]?
 
     var isSystemSymbol: Bool = false
@@ -40,7 +44,7 @@ struct SourceLocation: Codable, Hashable {
 }
 
 enum SymbolKind: String, Codable, Hashable {
-    case `class`, `struct`, `enum`, `protocol`, method, property, function, unknown, initializer, `subscript`, `operator`
+    case `class`, `struct`, `enum`, `protocol`, method, property, function, unknown, initializer, `subscript`, `operator`, enumCase
 }
 
 enum EdgeType: String, Codable, Hashable {
