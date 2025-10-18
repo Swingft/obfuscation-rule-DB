@@ -26,3 +26,6 @@ __pycache__/
 *.pyd
 
 backup/rule_output/
+learning/cache/
+learning/data/
+learning/.env
